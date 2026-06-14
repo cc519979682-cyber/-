@@ -22,43 +22,44 @@ UPSTREAM_URL = (
 PROXY_POLICIES = {"AI", "YouTube", "TikTok", "Javday", "Proxy", "PROXY"}
 DIRECT_POLICIES = {"DIRECT", "Direct", "Domestic"}
 REJECT_POLICIES = {"REJECT", "Reject"}
+PUBLIC_PROXY_POLICY = "PROXY"
 TIKTOK_PROXY_DOMAINS = {
     ("DOMAIN-SUFFIX", "ibytedtos.com"),
     ("DOMAIN-SUFFIX", "isnssdk.com"),
 }
 RULESET_FALLBACK_RULES = {
     "Netflix": [
-        "DOMAIN-SUFFIX,netflix.com,Proxy",
-        "DOMAIN-SUFFIX,netflix.net,Proxy",
-        "DOMAIN-SUFFIX,nflxvideo.net,Proxy",
-        "DOMAIN-SUFFIX,nflximg.net,Proxy",
-        "DOMAIN-SUFFIX,nflxso.net,Proxy",
-        "DOMAIN-SUFFIX,nflxext.com,Proxy",
+        f"DOMAIN-SUFFIX,netflix.com,{PUBLIC_PROXY_POLICY}",
+        f"DOMAIN-SUFFIX,netflix.net,{PUBLIC_PROXY_POLICY}",
+        f"DOMAIN-SUFFIX,nflxvideo.net,{PUBLIC_PROXY_POLICY}",
+        f"DOMAIN-SUFFIX,nflximg.net,{PUBLIC_PROXY_POLICY}",
+        f"DOMAIN-SUFFIX,nflxso.net,{PUBLIC_PROXY_POLICY}",
+        f"DOMAIN-SUFFIX,nflxext.com,{PUBLIC_PROXY_POLICY}",
     ],
     "Disney Plus": [
-        "DOMAIN-SUFFIX,disneyplus.com,Proxy",
-        "DOMAIN-SUFFIX,disney-plus.net,Proxy",
-        "DOMAIN-SUFFIX,dssott.com,Proxy",
-        "DOMAIN-SUFFIX,bamgrid.com,Proxy",
+        f"DOMAIN-SUFFIX,disneyplus.com,{PUBLIC_PROXY_POLICY}",
+        f"DOMAIN-SUFFIX,disney-plus.net,{PUBLIC_PROXY_POLICY}",
+        f"DOMAIN-SUFFIX,dssott.com,{PUBLIC_PROXY_POLICY}",
+        f"DOMAIN-SUFFIX,bamgrid.com,{PUBLIC_PROXY_POLICY}",
     ],
     "Telegram": [
-        "DOMAIN-SUFFIX,telegram.org,Proxy",
-        "DOMAIN-SUFFIX,t.me,Proxy",
-        "DOMAIN-SUFFIX,tdesktop.com,Proxy",
+        f"DOMAIN-SUFFIX,telegram.org,{PUBLIC_PROXY_POLICY}",
+        f"DOMAIN-SUFFIX,t.me,{PUBLIC_PROXY_POLICY}",
+        f"DOMAIN-SUFFIX,tdesktop.com,{PUBLIC_PROXY_POLICY}",
     ],
     "Discord": [
-        "DOMAIN-SUFFIX,discord.com,Proxy",
-        "DOMAIN-SUFFIX,discord.gg,Proxy",
-        "DOMAIN-SUFFIX,discordapp.com,Proxy",
-        "DOMAIN-SUFFIX,discordapp.net,Proxy",
+        f"DOMAIN-SUFFIX,discord.com,{PUBLIC_PROXY_POLICY}",
+        f"DOMAIN-SUFFIX,discord.gg,{PUBLIC_PROXY_POLICY}",
+        f"DOMAIN-SUFFIX,discordapp.com,{PUBLIC_PROXY_POLICY}",
+        f"DOMAIN-SUFFIX,discordapp.net,{PUBLIC_PROXY_POLICY}",
     ],
     "Spotify": [
-        "DOMAIN-SUFFIX,spotify.com,Proxy",
-        "DOMAIN-SUFFIX,scdn.co,Proxy",
+        f"DOMAIN-SUFFIX,spotify.com,{PUBLIC_PROXY_POLICY}",
+        f"DOMAIN-SUFFIX,scdn.co,{PUBLIC_PROXY_POLICY}",
     ],
     "PayPal": [
-        "DOMAIN-SUFFIX,paypal.com,Proxy",
-        "DOMAIN-SUFFIX,paypalobjects.com,Proxy",
+        f"DOMAIN-SUFFIX,paypal.com,{PUBLIC_PROXY_POLICY}",
+        f"DOMAIN-SUFFIX,paypalobjects.com,{PUBLIC_PROXY_POLICY}",
     ],
 }
 SENSITIVE_PATTERNS = [
@@ -144,9 +145,9 @@ def normalize_policy(policy: str) -> str | None:
     if clean in REJECT_POLICIES:
         return "REJECT"
     if clean in PROXY_POLICIES:
-        return "Proxy"
+        return PUBLIC_PROXY_POLICY
     if clean and clean.lower() != "no-resolve":
-        return "Proxy"
+        return PUBLIC_PROXY_POLICY
     return None
 
 
@@ -217,7 +218,7 @@ def fallback_rules_for_line(line: str) -> list[str]:
     if len(parts) < 3 or parts[0] != "RULE-SET":
         return []
     policy = normalize_policy(parts[2])
-    if policy != "Proxy":
+    if policy != PUBLIC_PROXY_POLICY:
         return []
     return RULESET_FALLBACK_RULES.get(parts[1], [])
 
@@ -238,7 +239,7 @@ def sanitize_rules(source_text: str, drop_ips: set[str] | None = None) -> list[s
             continue
         key, rule = parsed
         if key in rules:
-            if key in TIKTOK_PROXY_DOMAINS and rule.endswith(",Proxy"):
+            if key in TIKTOK_PROXY_DOMAINS and rule.endswith(f",{PUBLIC_PROXY_POLICY}"):
                 rules[key] = rule
             continue
         rules[key] = rule
