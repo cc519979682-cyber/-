@@ -20,11 +20,46 @@ UPSTREAM_URL = (
 )
 
 PROXY_POLICIES = {"AI", "YouTube", "TikTok", "Javday", "Proxy", "PROXY"}
-DIRECT_POLICIES = {"DIRECT", "Direct"}
+DIRECT_POLICIES = {"DIRECT", "Direct", "Domestic"}
 REJECT_POLICIES = {"REJECT", "Reject"}
 TIKTOK_PROXY_DOMAINS = {
     ("DOMAIN-SUFFIX", "ibytedtos.com"),
     ("DOMAIN-SUFFIX", "isnssdk.com"),
+}
+RULESET_FALLBACK_RULES = {
+    "Netflix": [
+        "DOMAIN-SUFFIX,netflix.com,Proxy",
+        "DOMAIN-SUFFIX,netflix.net,Proxy",
+        "DOMAIN-SUFFIX,nflxvideo.net,Proxy",
+        "DOMAIN-SUFFIX,nflximg.net,Proxy",
+        "DOMAIN-SUFFIX,nflxso.net,Proxy",
+        "DOMAIN-SUFFIX,nflxext.com,Proxy",
+    ],
+    "Disney Plus": [
+        "DOMAIN-SUFFIX,disneyplus.com,Proxy",
+        "DOMAIN-SUFFIX,disney-plus.net,Proxy",
+        "DOMAIN-SUFFIX,dssott.com,Proxy",
+        "DOMAIN-SUFFIX,bamgrid.com,Proxy",
+    ],
+    "Telegram": [
+        "DOMAIN-SUFFIX,telegram.org,Proxy",
+        "DOMAIN-SUFFIX,t.me,Proxy",
+        "DOMAIN-SUFFIX,tdesktop.com,Proxy",
+    ],
+    "Discord": [
+        "DOMAIN-SUFFIX,discord.com,Proxy",
+        "DOMAIN-SUFFIX,discord.gg,Proxy",
+        "DOMAIN-SUFFIX,discordapp.com,Proxy",
+        "DOMAIN-SUFFIX,discordapp.net,Proxy",
+    ],
+    "Spotify": [
+        "DOMAIN-SUFFIX,spotify.com,Proxy",
+        "DOMAIN-SUFFIX,scdn.co,Proxy",
+    ],
+    "PayPal": [
+        "DOMAIN-SUFFIX,paypal.com,Proxy",
+        "DOMAIN-SUFFIX,paypalobjects.com,Proxy",
+    ],
 }
 SENSITIVE_PATTERNS = [
     re.compile(r"^\s*(uuid|password|passwd|server|cipher)\s*[:=]", re.I | re.M),
@@ -58,6 +93,10 @@ def extract_rule_lines(text: str) -> list[str]:
 
     for line in lines:
         stripped = line.strip()
+        if stripped == "rules:":
+            saw_section = True
+            in_rule = True
+            continue
         if stripped.startswith("[") and stripped.endswith("]"):
             saw_section = True
             in_rule = stripped.lower() == "[rule]"
@@ -70,6 +109,34 @@ def extract_rule_lines(text: str) -> list[str]:
     return result
 
 
+def collect_rule_provider_urls(text: str) -> dict[str, str]:
+    providers: dict[str, str] = {}
+    in_providers = False
+    current_name: str | None = None
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped == "rule-providers:":
+            in_providers = True
+            current_name = None
+            continue
+        if stripped == "rules:":
+            break
+        if not in_providers:
+            continue
+        provider_match = re.match(r"^\s{2}([^:#]+):\s*$", line)
+        if provider_match:
+            current_name = provider_match.group(1).strip().strip('"').strip("'")
+            continue
+        url_match = re.match(r"^\s+url:\s*(.+?)\s*$", line)
+        if current_name and url_match:
+            url = url_match.group(1).strip().strip('"').strip("'")
+            if url.startswith(("http://", "https://")):
+                providers[current_name] = url
+
+    return providers
+
+
 def normalize_policy(policy: str) -> str | None:
     clean = policy.strip()
     if clean in DIRECT_POLICIES:
@@ -77,6 +144,8 @@ def normalize_policy(policy: str) -> str | None:
     if clean in REJECT_POLICIES:
         return "REJECT"
     if clean in PROXY_POLICIES:
+        return "Proxy"
+    if clean and clean.lower() != "no-resolve":
         return "Proxy"
     return None
 
@@ -108,8 +177,14 @@ def is_dropped_ip_rule(rule_type: str, value: str, drop_ips: set[str]) -> bool:
     return str(network.network_address) in drop_ips
 
 
-def parse_rule(line: str, drop_ips: set[str]) -> tuple[tuple[str, str], str] | None:
+def parse_rule(
+    line: str,
+    drop_ips: set[str],
+    provider_urls: dict[str, str] | None = None,
+) -> tuple[tuple[str, str], str] | None:
     stripped = line.strip().strip('"').strip("'")
+    if stripped.startswith("- "):
+        stripped = stripped[2:].strip().strip('"').strip("'")
     if not stripped or stripped.startswith("#"):
         return None
     parts = [part.strip() for part in stripped.split(",")]
@@ -126,17 +201,40 @@ def parse_rule(line: str, drop_ips: set[str]) -> tuple[tuple[str, str], str] | N
     value = parts[1]
     if is_dropped_ip_rule(rule_type, value, drop_ips):
         return None
+    if rule_type == "RULE-SET":
+        if not value.startswith(("http://", "https://")):
+            return None
     if rule_type == "GEOIP":
         return ((rule_type, value.upper()), f"{rule_type},{value.upper()},{policy}")
     return ((rule_type, value.lower()), f"{rule_type},{value},{policy}")
 
 
+def fallback_rules_for_line(line: str) -> list[str]:
+    stripped = line.strip().strip('"').strip("'")
+    if stripped.startswith("- "):
+        stripped = stripped[2:].strip().strip('"').strip("'")
+    parts = [part.strip() for part in stripped.split(",")]
+    if len(parts) < 3 or parts[0] != "RULE-SET":
+        return []
+    policy = normalize_policy(parts[2])
+    if policy != "Proxy":
+        return []
+    return RULESET_FALLBACK_RULES.get(parts[1], [])
+
+
 def sanitize_rules(source_text: str, drop_ips: set[str] | None = None) -> list[str]:
     rules: OrderedDict[tuple[str, str], str] = OrderedDict()
     drop_ips = drop_ips or set()
+    provider_urls = collect_rule_provider_urls(source_text)
     for line in extract_rule_lines(source_text):
-        parsed = parse_rule(line, drop_ips)
+        parsed = parse_rule(line, drop_ips, provider_urls)
         if parsed is None:
+            for fallback_line in fallback_rules_for_line(line):
+                fallback_parsed = parse_rule(fallback_line, drop_ips, provider_urls)
+                if fallback_parsed is None:
+                    continue
+                fallback_key, fallback_rule = fallback_parsed
+                rules.setdefault(fallback_key, fallback_rule)
             continue
         key, rule = parsed
         if key in rules:
