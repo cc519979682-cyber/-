@@ -1,6 +1,12 @@
 name: Build personal Shadowrocket rules
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "personal/**"
+      - "scripts/**"
+      - ".github/workflows/build.yml"
   schedule:
     # 08:20 Beijing time, after the upstream daily build window.
     - cron: "20 0 * * *"
