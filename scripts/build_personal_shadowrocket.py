@@ -19,12 +19,20 @@ UPSTREAM_URL = (
     "Shadowrocket-ADBlock-Rules-Forever/release/sr_top500_whitelist_ad.conf"
 )
 SAFE_DNS_SERVER_LINE = (
-    "dns-server = https://cloudflare-dns.com/dns-query, https://dns.google/dns-query"
+    "dns-server = https://1.1.1.1/dns-query, https://8.8.8.8/dns-query"
+)
+SAFE_FALLBACK_DNS_SERVER_LINE = (
+    "fallback-dns-server = https://1.0.0.1/dns-query, https://8.8.4.4/dns-query"
+)
+SAFE_PROXY_DNS_SERVER_LINE = (
+    "proxy-dns-server = https://1.1.1.1/dns-query, https://8.8.8.8/dns-query"
 )
 SAFE_GENERAL_LINES = [
     "ipv6 = false",
     "bypass-system = true",
     SAFE_DNS_SERVER_LINE,
+    SAFE_FALLBACK_DNS_SERVER_LINE,
+    SAFE_PROXY_DNS_SERVER_LINE,
     "prefer-ipv6 = false",
     "dns-fallback-system = false",
     "dns-direct-system = false",
@@ -99,6 +107,7 @@ RULE_TYPES = {
     "GEOIP",
     "RULE-SET",
 }
+STRIPPED_SECTIONS = {"[url rewrite]", "[mitm]"}
 
 
 def read_text(path: Path) -> str:
@@ -289,7 +298,7 @@ def insert_overlay(upstream: str, overlay_rules: list[str]) -> str:
         raise ValueError("Upstream config does not contain a [Rule] section")
     header = [
         "# Personal public-safe rules generated from soft-router rules",
-        f"# Generated: {dt.datetime.now(dt.UTC).strftime('%Y-%m-%d %H:%M:%S')} UTC",
+        f"# Generated: {dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC",
         *overlay_rules,
         "",
     ]
@@ -336,6 +345,75 @@ def force_safe_general_settings(config: str) -> str:
     return "\n".join(result) + "\n"
 
 
+def strip_unused_sections(config: str) -> str:
+    """Remove upstream rewrite/MITM sections from the public outbound config."""
+
+    result: list[str] = []
+    skip_section = False
+
+    for line in config.splitlines():
+        stripped = line.strip()
+        is_section = stripped.startswith("[") and stripped.endswith("]")
+        if is_section:
+            skip_section = stripped.lower() in STRIPPED_SECTIONS
+        if not skip_section:
+            result.append(line)
+
+    return "\n".join(result) + "\n"
+
+
+def normalize_generated_rule_line(line: str) -> str:
+    stripped = line.strip()
+    if not stripped or stripped.startswith(("#", "//")):
+        return line
+
+    parts = [part.strip() for part in line.split(",")]
+    rule_type = parts[0].strip()
+
+    if rule_type == "FINAL" and len(parts) >= 2:
+        policy = normalize_policy(parts[1]) or parts[1]
+        parts[1] = policy
+        return ",".join(parts)
+
+    if rule_type not in RULE_TYPES or len(parts) < 3:
+        return line
+
+    policy = normalize_policy(parts[2])
+    if policy is None:
+        return line
+
+    parts[2] = policy
+    if (
+        policy == PUBLIC_PROXY_POLICY
+        and rule_type in {"DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD"}
+        and "force-remote-dns" not in {part.lower() for part in parts[3:]}
+    ):
+        parts.append("force-remote-dns")
+
+    return ",".join(parts)
+
+
+def normalize_generated_rules(config: str) -> str:
+    lines = config.splitlines()
+    result: list[str] = []
+    in_rule = False
+
+    for line in lines:
+        stripped = line.strip()
+        is_section = stripped.startswith("[") and stripped.endswith("]")
+        if is_section:
+            in_rule = stripped.lower() == "[rule]"
+            result.append(line)
+            continue
+
+        if in_rule:
+            result.append(normalize_generated_rule_line(line))
+        else:
+            result.append(line)
+
+    return "\n".join(result) + "\n"
+
+
 def assert_public_safe(text: str) -> None:
     hits = []
     for pattern in SENSITIVE_PATTERNS:
@@ -365,6 +443,12 @@ def validate_output(text: str) -> None:
     for required_line in SAFE_GENERAL_LINES:
         if count_occurrences(text, required_line) != 1:
             raise ValueError(f"Generated config must contain exactly one {required_line!r}")
+    for stripped_section in STRIPPED_SECTIONS:
+        if any(line.strip().lower() == stripped_section for line in text.splitlines()):
+            raise ValueError(f"Generated config must not contain {stripped_section}")
+    mixed_case_policy = re.compile(r",(Proxy|Direct|Reject)(,|$)")
+    if mixed_case_policy.search(text):
+        raise ValueError("Generated config must normalize policies to uppercase")
     assert_public_safe(text)
 
 
@@ -396,7 +480,10 @@ def main() -> int:
         rules = sanitize_rules(read_text(personal_path))
 
     upstream = fetch_upstream(args.upstream_url)
-    generated = force_safe_general_settings(insert_overlay(upstream, rules))
+    generated = normalize_generated_rules(
+        strip_unused_sections(force_safe_general_settings(insert_overlay(upstream, rules)))
+    )
+    generated = generated.rstrip() + "\n"
     validate_output(generated)
     write_text(Path(args.output), generated)
 

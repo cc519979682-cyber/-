@@ -10,4 +10,4 @@ Keep this file free of:
 - proxy provider URLs
 - passwords or UUIDs
 
-Policies in this file should only be `DIRECT`, `REJECT`, or `Proxy`.
+Policies in this file should only be `DIRECT`, `REJECT`, or `PROXY`.
