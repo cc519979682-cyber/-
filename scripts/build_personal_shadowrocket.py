@@ -18,6 +18,9 @@ UPSTREAM_URL = (
     "https://raw.githubusercontent.com/Johnshall/"
     "Shadowrocket-ADBlock-Rules-Forever/release/sr_top500_whitelist_ad.conf"
 )
+SAFE_DNS_SERVER_LINE = (
+    "dns-server = https://cloudflare-dns.com/dns-query, https://dns.google/dns-query"
+)
 
 PROXY_POLICIES = {"AI", "YouTube", "TikTok", "Javday", "Proxy", "PROXY"}
 DIRECT_POLICIES = {"DIRECT", "Direct", "Domestic"}
@@ -65,6 +68,7 @@ RULESET_FALLBACK_RULES = {
 SENSITIVE_PATTERNS = [
     re.compile(r"^\s*(uuid|password|passwd|server|cipher)\s*[:=]", re.I | re.M),
     re.compile(r"\b(ss|ssr|vmess|vless|trojan)://", re.I),
+    re.compile(r"\b192\.168\.1\.1\b"),
 ]
 RULE_TYPES = {
     "DOMAIN",
@@ -265,6 +269,42 @@ def insert_overlay(upstream: str, overlay_rules: list[str]) -> str:
     return upstream.replace(marker, marker + "\n" + "\n".join(header), 1)
 
 
+def force_safe_dns(config: str) -> str:
+    lines = config.splitlines()
+    result: list[str] = []
+    in_general = False
+    saw_general = False
+    replaced_dns = False
+
+    for line in lines:
+        stripped = line.strip()
+        is_section = stripped.startswith("[") and stripped.endswith("]")
+        if is_section:
+            if in_general and not replaced_dns:
+                result.append(SAFE_DNS_SERVER_LINE)
+                replaced_dns = True
+            in_general = stripped.lower() == "[general]"
+            saw_general = saw_general or in_general
+            result.append(line)
+            continue
+
+        if in_general and stripped.lower().startswith("dns-server"):
+            if not replaced_dns:
+                result.append(SAFE_DNS_SERVER_LINE)
+                replaced_dns = True
+            continue
+
+        result.append(line)
+
+    if in_general and not replaced_dns:
+        result.append(SAFE_DNS_SERVER_LINE)
+
+    if not saw_general:
+        raise ValueError("Generated config must contain a [General] section")
+
+    return "\n".join(result) + "\n"
+
+
 def assert_public_safe(text: str) -> None:
     hits = []
     for pattern in SENSITIVE_PATTERNS:
@@ -284,6 +324,13 @@ def validate_output(text: str) -> None:
     final_count = sum(1 for line in text.splitlines() if line.strip().upper().startswith("FINAL,"))
     if final_count != 1:
         raise ValueError(f"Generated config must contain exactly one FINAL rule, found {final_count}")
+    dns_lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip().lower().startswith("dns-server")
+    ]
+    if dns_lines != [SAFE_DNS_SERVER_LINE]:
+        raise ValueError("Generated config must use the safe outdoor DoH DNS server line")
     assert_public_safe(text)
 
 
@@ -315,7 +362,7 @@ def main() -> int:
         rules = sanitize_rules(read_text(personal_path))
 
     upstream = fetch_upstream(args.upstream_url)
-    generated = insert_overlay(upstream, rules)
+    generated = force_safe_dns(insert_overlay(upstream, rules))
     validate_output(generated)
     write_text(Path(args.output), generated)
 
