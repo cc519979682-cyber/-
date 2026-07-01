@@ -21,6 +21,20 @@ UPSTREAM_URL = (
 SAFE_DNS_SERVER_LINE = (
     "dns-server = https://cloudflare-dns.com/dns-query, https://dns.google/dns-query"
 )
+SAFE_GENERAL_LINES = [
+    "ipv6 = false",
+    "bypass-system = true",
+    SAFE_DNS_SERVER_LINE,
+    "prefer-ipv6 = false",
+    "dns-fallback-system = false",
+    "dns-direct-system = false",
+    "private-ip-answer = true",
+    "dns-direct-fallback-proxy = true",
+]
+SAFE_GENERAL_KEYS = {
+    line.split("=", 1)[0].strip().lower()
+    for line in SAFE_GENERAL_LINES
+}
 
 PROXY_POLICIES = {"AI", "YouTube", "TikTok", "Javday", "Proxy", "PROXY"}
 DIRECT_POLICIES = {"DIRECT", "Direct", "Domestic"}
@@ -30,6 +44,12 @@ TIKTOK_PROXY_DOMAINS = {
     ("DOMAIN-SUFFIX", "ibytedtos.com"),
     ("DOMAIN-SUFFIX", "isnssdk.com"),
 }
+PRIVACY_TEST_PROXY_RULES = [
+    f"DOMAIN-SUFFIX,browserleaks.com,{PUBLIC_PROXY_POLICY}",
+    f"DOMAIN-SUFFIX,dnsleaktest.com,{PUBLIC_PROXY_POLICY}",
+    f"DOMAIN-SUFFIX,ipleak.net,{PUBLIC_PROXY_POLICY}",
+    f"DOMAIN-SUFFIX,whoer.net,{PUBLIC_PROXY_POLICY}",
+]
 RULESET_FALLBACK_RULES = {
     "Netflix": [
         f"DOMAIN-SUFFIX,netflix.com,{PUBLIC_PROXY_POLICY}",
@@ -211,6 +231,8 @@ def parse_rule(
             return None
     if rule_type == "GEOIP":
         return ((rule_type, value.upper()), f"{rule_type},{value.upper()},{policy}")
+    if policy == PUBLIC_PROXY_POLICY and rule_type in {"DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD"}:
+        return ((rule_type, value.lower()), f"{rule_type},{value},{policy},force-remote-dns")
     return ((rule_type, value.lower()), f"{rule_type},{value},{policy}")
 
 
@@ -231,6 +253,11 @@ def sanitize_rules(source_text: str, drop_ips: set[str] | None = None) -> list[s
     rules: OrderedDict[tuple[str, str], str] = OrderedDict()
     drop_ips = drop_ips or set()
     provider_urls = collect_rule_provider_urls(source_text)
+    for privacy_test_rule in PRIVACY_TEST_PROXY_RULES:
+        parsed_privacy_test_rule = parse_rule(privacy_test_rule, drop_ips, provider_urls)
+        if parsed_privacy_test_rule is not None:
+            key, rule = parsed_privacy_test_rule
+            rules[key] = rule
     for line in extract_rule_lines(source_text):
         parsed = parse_rule(line, drop_ips, provider_urls)
         if parsed is None:
@@ -269,35 +296,39 @@ def insert_overlay(upstream: str, overlay_rules: list[str]) -> str:
     return upstream.replace(marker, marker + "\n" + "\n".join(header), 1)
 
 
-def force_safe_dns(config: str) -> str:
+def force_safe_general_settings(config: str) -> str:
     lines = config.splitlines()
     result: list[str] = []
     in_general = False
     saw_general = False
-    replaced_dns = False
+    inserted_safe_settings = False
+
+    def insert_safe_settings_once() -> None:
+        nonlocal inserted_safe_settings
+        if not inserted_safe_settings:
+            result.extend(SAFE_GENERAL_LINES)
+            inserted_safe_settings = True
 
     for line in lines:
         stripped = line.strip()
         is_section = stripped.startswith("[") and stripped.endswith("]")
         if is_section:
-            if in_general and not replaced_dns:
-                result.append(SAFE_DNS_SERVER_LINE)
-                replaced_dns = True
+            if in_general:
+                insert_safe_settings_once()
             in_general = stripped.lower() == "[general]"
             saw_general = saw_general or in_general
             result.append(line)
             continue
 
-        if in_general and stripped.lower().startswith("dns-server"):
-            if not replaced_dns:
-                result.append(SAFE_DNS_SERVER_LINE)
-                replaced_dns = True
-            continue
+        if in_general and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip().lower()
+            if key in SAFE_GENERAL_KEYS:
+                continue
 
         result.append(line)
 
-    if in_general and not replaced_dns:
-        result.append(SAFE_DNS_SERVER_LINE)
+    if in_general:
+        insert_safe_settings_once()
 
     if not saw_general:
         raise ValueError("Generated config must contain a [General] section")
@@ -331,6 +362,9 @@ def validate_output(text: str) -> None:
     ]
     if dns_lines != [SAFE_DNS_SERVER_LINE]:
         raise ValueError("Generated config must use the safe outdoor DoH DNS server line")
+    for required_line in SAFE_GENERAL_LINES:
+        if count_occurrences(text, required_line) != 1:
+            raise ValueError(f"Generated config must contain exactly one {required_line!r}")
     assert_public_safe(text)
 
 
@@ -362,7 +396,7 @@ def main() -> int:
         rules = sanitize_rules(read_text(personal_path))
 
     upstream = fetch_upstream(args.upstream_url)
-    generated = force_safe_dns(insert_overlay(upstream, rules))
+    generated = force_safe_general_settings(insert_overlay(upstream, rules))
     validate_output(generated)
     write_text(Path(args.output), generated)
 
