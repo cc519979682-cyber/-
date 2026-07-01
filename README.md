@@ -7,6 +7,22 @@ This repository builds a public-safe Shadowrocket config from a soft-router rule
 - `sr_personal_whitelist_ad.conf`: final Shadowrocket subscription file.
 - `personal/rules.conf`: public-safe personal overlay rules.
 
+## Recovery Docs
+
+This repo also keeps public-safe recovery notes under `docs/`.
+
+- `docs/README-小白恢复指南.md`: plain-language recovery checklist.
+- `docs/network-topology.md`: home network topology and device roles.
+- `docs/shadowrocket-rules.md`: Shadowrocket rule and DNS policy notes.
+- `docs/openclash-notes.md`: OpenClash maintenance notes without secrets.
+- `docs/dns-leak-troubleshooting.md`: DNS leak troubleshooting notes.
+
+Sensitive node material is not stored in GitHub. Keep it in the private NAS folder:
+
+```text
+\\192.168.1.186\personal_folder\同步工作\VPS
+```
+
 Use this URL after GitHub Pages is enabled:
 
 ```text
