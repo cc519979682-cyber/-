@@ -19,7 +19,7 @@ UPSTREAM_URL = (
     "Shadowrocket-ADBlock-Rules-Forever/release/sr_top500_whitelist_ad.conf"
 )
 SAFE_DNS_SERVER_LINE = (
-    "dns-server = https://1.1.1.1/dns-query, https://8.8.8.8/dns-query"
+    "dns-server = https://223.5.5.5/dns-query, https://223.6.6.6/dns-query"
 )
 SAFE_FALLBACK_DNS_SERVER_LINE = (
     "fallback-dns-server = https://1.0.0.1/dns-query, https://8.8.4.4/dns-query"
@@ -57,6 +57,10 @@ PRIVACY_TEST_PROXY_RULES = [
     f"DOMAIN-SUFFIX,dnsleaktest.com,{PUBLIC_PROXY_POLICY}",
     f"DOMAIN-SUFFIX,ipleak.net,{PUBLIC_PROXY_POLICY}",
     f"DOMAIN-SUFFIX,whoer.net,{PUBLIC_PROXY_POLICY}",
+    f"DOMAIN-KEYWORD,browserleaks,{PUBLIC_PROXY_POLICY}",
+    f"DOMAIN-KEYWORD,dnsleak,{PUBLIC_PROXY_POLICY}",
+    f"DOMAIN-KEYWORD,ipleak,{PUBLIC_PROXY_POLICY}",
+    f"DOMAIN-KEYWORD,whoer,{PUBLIC_PROXY_POLICY}",
 ]
 RULESET_FALLBACK_RULES = {
     "Netflix": [
