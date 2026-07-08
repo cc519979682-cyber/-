@@ -1,4 +1,4 @@
-name: Build personal Shadowrocket rules
+name: Build personal client rules
 
 on:
   push:
@@ -26,13 +26,15 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Build public config
-        run: python scripts/build_personal_shadowrocket.py
+      - name: Build public configs
+        run: |
+          python scripts/build_personal_shadowrocket.py
+          python scripts/build_v2rayn_routing.py
 
-      - name: Commit generated config
+      - name: Commit generated configs
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add sr_personal_whitelist_ad.conf personal/rules.conf
-          git diff --cached --quiet || git commit -m "Build personal Shadowrocket rules"
+          git add sr_personal_whitelist_ad.conf v2rayn_personal_routing_rules.json personal/rules.conf
+          git diff --cached --quiet || git commit -m "Build personal client rules"
           git push

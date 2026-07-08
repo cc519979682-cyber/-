@@ -12,6 +12,8 @@
 
 ## 直接使用
 
+### Shadowrocket / 小火箭
+
 Shadowrocket 里可以通过 URL 下载这份配置：
 
 ```text
@@ -26,11 +28,34 @@ https://raw.githubusercontent.com/cc519979682-cyber/-/main/sr_personal_whitelist
 
 下载后选择 `sr_personal_whitelist_ad.conf` 作为当前配置。
 
+### v2rayN
+
+v2rayN 和小火箭不太一样：
+
+- 节点订阅：继续用你自己的机场/VPS订阅。
+- 路由规则：可以用这个仓库生成的公开规则。
+
+v2rayN 路由规则链接：
+
+```text
+https://raw.githubusercontent.com/cc519979682-cyber/-/main/v2rayn_personal_routing_rules.json
+```
+
+建议在 v2rayN 里这样操作：
+
+```text
+设置 -> 路由设置 -> 路由规则 -> 从订阅 URL 导入规则
+```
+
+粘贴上面的链接后导入。导入后选择这套路由规则，再配合你的节点订阅使用。
+
 ## 文件说明
 
 - `sr_personal_whitelist_ad.conf`：最终生成的小火箭配置文件。
+- `v2rayn_personal_routing_rules.json`：最终生成的 v2rayN 路由规则文件。
 - `personal/rules.conf`：我自己的公开安全规则，只放域名分流和广告拦截补充。
-- `scripts/build_personal_shadowrocket.py`：自动生成最终配置的脚本。
+- `scripts/build_personal_shadowrocket.py`：自动生成小火箭配置的脚本。
+- `scripts/build_v2rayn_routing.py`：自动生成 v2rayN 路由规则的脚本。
 - `docs/`：软路由、DNS、防泄露、恢复流程等说明文档。
 
 ## 自动更新
@@ -41,7 +66,7 @@ https://raw.githubusercontent.com/cc519979682-cyber/-/main/sr_personal_whitelist
 
 1. 每天拉取上游广告规则底版。
 2. 把 `personal/rules.conf` 里的自用规则合并进去。
-3. 重新生成 `sr_personal_whitelist_ad.conf`。
+3. 重新生成 `sr_personal_whitelist_ad.conf` 和 `v2rayn_personal_routing_rules.json`。
 4. 自动提交到 GitHub。
 
 所以平时你只需要订阅最终链接，不需要每天手动下载。
