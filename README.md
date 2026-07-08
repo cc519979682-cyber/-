@@ -1,55 +1,101 @@
-# Personal Shadowrocket Rules
+# 自用 Shadowrocket 去广告与分流规则
 
-This repository builds a public-safe Shadowrocket config from a soft-router rule overlay.
+这个仓库用于生成一份给 Shadowrocket / 小火箭使用的自用配置文件。
 
-## Output
+它的目标很简单：
 
-- `sr_personal_whitelist_ad.conf`: final Shadowrocket subscription file.
-- `personal/rules.conf`: public-safe personal overlay rules.
+- 广告、追踪域名尽量拦截。
+- 国内网站、银行、购物、常用国产 App 尽量直连。
+- OpenAI、Google、YouTube、X、TikTok 等国外服务走代理。
+- 手机离开家里软路由后，也尽量减少 DNS 泄露。
+- 不公开节点、密码、UUID、订阅链接等敏感信息。
 
-## Recovery Docs
+## 直接使用
 
-This repo also keeps public-safe recovery notes under `docs/`.
-
-- `docs/README-小白恢复指南.md`: plain-language recovery checklist.
-- `docs/network-topology.md`: home network topology and device roles.
-- `docs/shadowrocket-rules.md`: Shadowrocket rule and DNS policy notes.
-- `docs/openclash-notes.md`: OpenClash maintenance notes without secrets.
-- `docs/dns-leak-troubleshooting.md`: DNS leak troubleshooting notes.
-
-Sensitive node material is not stored in GitHub. Keep it in the private NAS folder:
+Shadowrocket 里可以通过 URL 下载这份配置：
 
 ```text
-\\192.168.1.186\personal_folder\同步工作\VPS
+https://raw.githubusercontent.com/cc519979682-cyber/-/main/sr_personal_whitelist_ad.conf
 ```
 
-Use this URL after GitHub Pages is enabled:
+建议在 Shadowrocket 里这样操作：
 
 ```text
-https://<your-github-username>.github.io/<repo-name>/sr_personal_whitelist_ad.conf
+配置 -> 右上角加号 -> 从 URL 下载配置 -> 粘贴上面的链接 -> 下载
 ```
 
-## What Is Published
+下载后选择 `sr_personal_whitelist_ad.conf` 作为当前配置。
 
-The generated config uses Johnshall's `sr_top500_whitelist_ad.conf` as the base and inserts your public-safe rules at the top of `[Rule]`.
+## 文件说明
 
-The public version deliberately does not publish:
+- `sr_personal_whitelist_ad.conf`：最终生成的小火箭配置文件。
+- `personal/rules.conf`：我自己的公开安全规则，只放域名分流和广告拦截补充。
+- `scripts/build_personal_shadowrocket.py`：自动生成最终配置的脚本。
+- `docs/`：软路由、DNS、防泄露、恢复流程等说明文档。
 
-- node names
-- node links
-- VPS IP rules
-- proxy groups
-- subscription URLs
-- passwords, UUIDs, or server fields
+## 自动更新
 
-## Refresh Rules From A Local Export
+这个项目会通过 GitHub Actions 自动更新。
 
-Run this locally after exporting a new Shadowrocket/OpenClash-derived config:
+大致流程是：
+
+1. 每天拉取上游广告规则底版。
+2. 把 `personal/rules.conf` 里的自用规则合并进去。
+3. 重新生成 `sr_personal_whitelist_ad.conf`。
+4. 自动提交到 GitHub。
+
+所以平时你只需要订阅最终链接，不需要每天手动下载。
+
+## 安全边界
+
+这个仓库只适合放“公开也没关系”的规则，例如：
+
+- `DOMAIN-SUFFIX,example.com,DIRECT`
+- `DOMAIN-SUFFIX,example.com,PROXY`
+- `DOMAIN-SUFFIX,ads.example.com,REJECT`
+
+不要把下面这些内容放进 GitHub：
+
+- 节点链接
+- 机场订阅链接
+- VPS IP 专用规则
+- UUID
+- Reality public key / short-id
+- 密码
+- API key
+- 完整 OpenClash 配置文件
+
+敏感资料请继续放在私人 NAS 文件夹里，不要提交到这个公开仓库。
+
+## 规则原则
+
+这份配置采用“白名单直连 + 广告拦截 + 其余代理”的思路：
+
+- 明确属于国内、银行、电商、生活服务的域名：`DIRECT`
+- 明确属于广告、追踪、统计的域名：`REJECT`
+- 明确属于国外服务的域名：`PROXY`
+- 没有命中的流量：按最终规则处理
+
+## 相关文档
+
+- `docs/README-小白恢复指南.md`：故障后如何恢复配置。
+- `docs/network-topology.md`：家庭网络拓扑和设备角色。
+- `docs/shadowrocket-rules.md`：Shadowrocket 规则和 DNS 说明。
+- `docs/openclash-notes.md`：OpenClash 维护笔记。
+- `docs/dns-leak-troubleshooting.md`：DNS 泄露排查说明。
+
+## 本地更新规则
+
+如果以后软路由规则变了，可以先导出公开安全的规则，再在本地执行：
 
 ```powershell
 python scripts/build_personal_shadowrocket.py --refresh-from "C:\path\to\shadowrocket-soft-router-rules.conf" --drop-ip "x.x.x.x"
 ```
 
-You can also put private IPs in `.private/drop_ips.txt` or set `PRIVATE_DROP_IPS` as a comma-separated list. `.private/` is ignored by Git.
+也可以把不想公开的 IP 放到 `.private/drop_ips.txt`，这个目录不会被 Git 提交。
 
-Review `personal/rules.conf`, then commit it. GitHub Actions will rebuild the final config daily at 08:20 Beijing time.
+更新后请先检查：
+
+- `personal/rules.conf` 里没有敏感信息。
+- `sr_personal_whitelist_ad.conf` 能正常生成。
+- Shadowrocket 下载配置后国内外网站都能正常打开。
