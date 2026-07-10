@@ -48,6 +48,9 @@
     "remarks": "国内和生活服务直连域名",
     "outboundTag": "direct",
     "domain": [
+      "full:chenxuning.cc",
+      "domain:chenxuning.cc",
+      "keyword:chenxuning",
       "domain:bambulab.com",
       "domain:bambulab.cn",
       "domain:bblmw.com",
@@ -85,7 +88,6 @@
       "domain:cdnst.net",
       "keyword:speedtest",
       "keyword:ookla",
-      "domain:chenxuning.cc",
       "domain:bygcloud.com",
       "domain:qinyues4.cc",
       "domain:owolist.cn",
