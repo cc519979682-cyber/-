@@ -43,6 +43,7 @@ SAFE_GENERAL_KEYS = {
     line.split("=", 1)[0].strip().lower()
     for line in SAFE_GENERAL_LINES
 }
+HOME_ACCESS_DOMAINS = ("chenxuning.cc", "*.chenxuning.cc")
 
 PROXY_POLICIES = {"AI", "YouTube", "TikTok", "Javday", "Proxy", "PROXY"}
 DIRECT_POLICIES = {"DIRECT", "Direct", "Domestic"}
@@ -349,6 +350,54 @@ def force_safe_general_settings(config: str) -> str:
     return "\n".join(result) + "\n"
 
 
+def add_home_access_exceptions(config: str) -> str:
+    """Keep the home DDNS domain out of Shadowrocket's proxy path.
+
+    The normal DIRECT rules remain the routing authority. These two general
+    settings additionally keep DNS and connection handling stable when the
+    same DDNS name is used both on the home Wi-Fi and from cellular networks.
+    """
+
+    lines = config.splitlines()
+    in_general = False
+    found_keys: set[str] = set()
+    general_end_index: int | None = None
+
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        is_section = stripped.startswith("[") and stripped.endswith("]")
+        if is_section:
+            if in_general and general_end_index is None:
+                general_end_index = index
+            in_general = stripped.lower() == "[general]"
+            continue
+        if not in_general or "=" not in stripped:
+            continue
+
+        key, value = (part.strip() for part in stripped.split("=", 1))
+        normalized_key = key.lower()
+        if normalized_key not in {"skip-proxy", "always-real-ip"}:
+            continue
+
+        values = [item.strip() for item in value.split(",") if item.strip()]
+        seen = {item.lower() for item in values}
+        for domain in HOME_ACCESS_DOMAINS:
+            if domain.lower() not in seen:
+                values.append(domain)
+                seen.add(domain.lower())
+        indent = line[: len(line) - len(line.lstrip())]
+        lines[index] = f"{indent}{key} = {', '.join(values)}"
+        found_keys.add(normalized_key)
+
+    insert_at = general_end_index if general_end_index is not None else len(lines)
+    for key in ("skip-proxy", "always-real-ip"):
+        if key not in found_keys:
+            lines.insert(insert_at, f"{key} = {', '.join(HOME_ACCESS_DOMAINS)}")
+            insert_at += 1
+
+    return "\n".join(lines) + "\n"
+
+
 def strip_unused_sections(config: str) -> str:
     """Remove upstream rewrite/MITM sections from the public outbound config."""
 
@@ -485,7 +534,9 @@ def main() -> int:
 
     upstream = fetch_upstream(args.upstream_url)
     generated = normalize_generated_rules(
-        strip_unused_sections(force_safe_general_settings(insert_overlay(upstream, rules)))
+        strip_unused_sections(
+            add_home_access_exceptions(force_safe_general_settings(insert_overlay(upstream, rules)))
+        )
     )
     generated = generated.rstrip() + "\n"
     validate_output(generated)
