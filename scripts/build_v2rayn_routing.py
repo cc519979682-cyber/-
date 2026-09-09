@@ -7,7 +7,6 @@ import argparse
 import json
 import re
 import sys
-from collections import OrderedDict
 from pathlib import Path
 
 
@@ -35,11 +34,6 @@ def normalize_policy(policy: str) -> str | None:
     return None
 
 
-def add_unique(bucket: OrderedDict[str, None], value: str) -> None:
-    if value:
-        bucket.setdefault(value, None)
-
-
 def convert_domain(rule_type: str, value: str) -> str | None:
     if rule_type == "DOMAIN":
         return f"full:{value}"
@@ -51,14 +45,15 @@ def convert_domain(rule_type: str, value: str) -> str | None:
 
 
 def build_rules(lines: list[str]) -> list[dict[str, object]]:
-    buckets: dict[tuple[str, str], OrderedDict[str, None]] = {
-        ("block", "domain"): OrderedDict(),
-        ("block", "ip"): OrderedDict(),
-        ("direct", "domain"): OrderedDict(),
-        ("direct", "ip"): OrderedDict(),
-        ("proxy", "domain"): OrderedDict(),
-        ("proxy", "ip"): OrderedDict(),
+    remarks = {
+        ("block", "domain"): "阻断广告域名",
+        ("block", "ip"): "阻断广告 IP",
+        ("direct", "domain"): "国内和生活服务直连域名",
+        ("direct", "ip"): "国内和生活服务直连 IP",
+        ("proxy", "domain"): "国外服务代理域名",
+        ("proxy", "ip"): "国外服务代理 IP",
     }
+    result: list[dict[str, object]] = []
 
     for line in lines:
         stripped = line.strip()
@@ -75,57 +70,35 @@ def build_rules(lines: list[str]) -> list[dict[str, object]]:
 
         domain_value = convert_domain(rule_type, value)
         if domain_value:
-            add_unique(buckets[(outbound, "domain")], domain_value)
+            field, converted_value = "domain", domain_value
+        elif rule_type in {"IP-CIDR", "IP-CIDR6"} and value:
+            field, converted_value = "ip", value
+        elif rule_type == "GEOIP" and value:
+            field, converted_value = "ip", f"geoip:{value.lower()}"
+        else:
             continue
-        if rule_type in {"IP-CIDR", "IP-CIDR6"}:
-            add_unique(buckets[(outbound, "ip")], value)
-            continue
-        if rule_type == "GEOIP":
-            add_unique(buckets[(outbound, "ip")], f"geoip:{value.lower()}")
 
-    result: list[dict[str, object]] = [
-        {
-            "remarks": "阻断广告域名",
-            "outboundTag": "block",
-            "domain": list(buckets[("block", "domain")].keys()),
-        },
-        {
-            "remarks": "阻断广告 IP",
-            "outboundTag": "block",
-            "ip": list(buckets[("block", "ip")].keys()),
-        },
-        {
-            "remarks": "国内和生活服务直连域名",
-            "outboundTag": "direct",
-            "domain": list(buckets[("direct", "domain")].keys()),
-        },
-        {
-            "remarks": "国内和生活服务直连 IP",
-            "outboundTag": "direct",
-            "ip": list(buckets[("direct", "ip")].keys()),
-        },
-        {
-            "remarks": "国外服务代理域名",
-            "outboundTag": "proxy",
-            "domain": list(buckets[("proxy", "domain")].keys()),
-        },
-        {
-            "remarks": "国外服务代理 IP",
-            "outboundTag": "proxy",
-            "ip": list(buckets[("proxy", "ip")].keys()),
-        },
+        # Routing is first-match: only adjacent equivalent segments may merge.
+        # Keep domain and IP fields separate; combining them would require both.
+        if result and result[-1]["outboundTag"] == outbound and field in result[-1]:
+            result[-1][field].append(converted_value)
+        else:
+            result.append(
+                {
+                    "remarks": remarks[(outbound, field)],
+                    "outboundTag": outbound,
+                    field: [converted_value],
+                }
+            )
+
+    result.append(
         {
             "remarks": "兜底代理",
             "outboundTag": "proxy",
             "port": "0-65535",
-        },
-    ]
-
-    return [
-        rule
-        for rule in result
-        if any(key in rule and rule[key] for key in ("domain", "ip", "port"))
-    ]
+        }
+    )
+    return result
 
 
 def assert_public_safe(text: str) -> None:

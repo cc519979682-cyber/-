@@ -28,6 +28,7 @@ jobs:
 
       - name: Build public configs
         run: |
+          python -m unittest discover -s scripts -p 'test_*.py'
           python scripts/build_personal_shadowrocket.py
           python scripts/build_v2rayn_routing.py
 
