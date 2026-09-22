@@ -1,5 +1,21 @@
 [
   {
+    "remarks": "国外服务代理域名",
+    "outboundTag": "proxy",
+    "domain": [
+      "domain:chatgpt.com",
+      "domain:openai.com",
+      "domain:oaistatic.com",
+      "domain:oaiusercontent.com",
+      "domain:claude.ai",
+      "domain:anthropic.com",
+      "domain:claudeusercontent.com",
+      "domain:gemini.google.com",
+      "domain:generativelanguage.googleapis.com",
+      "domain:aistudio.google.com"
+    ]
+  },
+  {
     "remarks": "国内和生活服务直连域名",
     "outboundTag": "direct",
     "domain": [
@@ -247,9 +263,7 @@
       "domain:javday.homes",
       "domain:javday.tv",
       "domain:hk01.com",
-      "domain:gemini.google.com",
       "domain:bard.google.com",
-      "domain:generativelanguage.googleapis.com",
       "domain:googleapis.com",
       "domain:googleusercontent.com",
       "domain:usercontent.google.com",
@@ -494,17 +508,10 @@
     "remarks": "国外服务代理域名",
     "outboundTag": "proxy",
     "domain": [
-      "domain:openai.com",
-      "domain:chatgpt.com",
-      "domain:oaistatic.com",
       "full:persistent.oaistatic.com",
-      "domain:oaiusercontent.com",
       "domain:sora.com",
       "domain:chatgpt.livekit.cloud",
       "domain:turn.livekit.cloud",
-      "domain:claude.ai",
-      "domain:anthropic.com",
-      "domain:claudeusercontent.com",
       "domain:perplexity.ai",
       "domain:poe.com",
       "domain:youtube.com",
