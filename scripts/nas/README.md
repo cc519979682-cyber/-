@@ -26,6 +26,12 @@
 不会被公开的规则：按设备（源 IP、端口、进程、用户、入站）的规则、走住宅出口
 （`Webshare-US-Residential`、`AI-Residential`）的规则、内网 IP 段、指向节点地址的规则、
 以及无法准确表达的规则（取反、AND 组合、正则、限定端口/协议）。
+另外：
+- **单个主机 IP 一律不公开**：IPv4 前缀 ≥ /29、IPv6 前缀 ≥ /120 的 IP 规则（很可能是自家或自有服务器的公网 IP），
+  不管走哪个出站都跳过（日志计数 `skipped_host_ip`）。手写在标记块外的 IP 规则不受影响。
+- **规则集里的“直连 IP 段”默认不公开**：这些几乎都是中国 IP 段，生成的配置里已有 `GEOIP,CN,DIRECT` 覆盖，
+  全部写出会多出约一万行（计数 `skipped_ip_direct_ruleset`）。直接写在路由规则里的直连 IP、以及走代理的 IP 段
+  （例如 Telegram）照常保留。如确实需要，在 `sync.env` 里设置 `INCLUDE_RULESET_IP_DIRECT=1`。
 
 安全保护：如果这次生成的规则比上次**少了 10% 以上**（上次至少 20 条时），会**停止、不上传**，
 并在日志里说明原因（防止路由器临时出错把规则清空）。
@@ -92,11 +98,15 @@ Host openbox-router
   IdentitiesOnly yes
 ```
 
-检查一下（应当打印出 sing-box 版本，且不需要输入密码）：
+检查一下（应当打印出 sing-box 版本，且不需要输入密码）。路由器的 busybox `command -v` 遇到第一个找不到的程序就会停下，
+所以每个程序分开查，每行都会显示“有”或“没有”：
 
 ```sh
-ssh -o BatchMode=yes openbox-router '/opt/open-box/bin/sing-box version | head -1; command -v jq ucode'
+ssh -o BatchMode=yes openbox-router '/opt/open-box/bin/sing-box version | head -1
+for p in jq ucode sha256sum; do if command -v "$p" >/dev/null 2>&1; then echo "$p: 有 ($(command -v "$p"))"; else echo "$p: 没有"; fi; done'
 ```
+
+正常情况：`jq: 没有` 没关系；`ucode` 和 `sha256sum` 需要是“有”（二者任缺其一，jq 或 openssl 可替代）。
 
 路由器上**不需要安装 jq**：没有 jq 时自动使用系统自带的 `ucode`。`sing-box` 默认先找
 `/opt/open-box/bin/sing-box`，路径不同再在 `sync.env` 里写 `ROUTER_SINGBOX=/实际/路径/sing-box`。

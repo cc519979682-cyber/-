@@ -164,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-missing-rulesets", action="store_true")
     parser.add_argument("--allow-large-deletion", action="store_true")
     parser.add_argument("--max-delete-ratio", type=float, default=srr.DEFAULT_MAX_DELETE_RATIO)
+    parser.add_argument("--include-ruleset-ip-direct", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -187,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
                 allow_missing_rulesets=args.allow_missing_rulesets,
                 max_delete_ratio=args.max_delete_ratio,
                 allow_large_deletion=args.allow_large_deletion,
+                skip_ruleset_ip_direct=not args.include_ruleset_ip_direct,
             )
 
         if args.token_file is not None:
