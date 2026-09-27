@@ -6,11 +6,12 @@
 这个小工具放在 NAS（绿联 DXP4800）上，**每小时自动**做一次：
 
 1. 通过 SSH **只读**登录路由器，只取出“分流规则”部分：
-   - `route` 段（用 `jq '{route: .route}'` 在路由器上提取）
-   - 被引用的本地规则集（在路由器上用 `sing-box rule-set decompile` 转成文本）
-   - 节点服务器地址的 **sha256 指纹**（只是用来过滤，地址本身不出路由器）
-   
-   **节点、密码、UUID、订阅等敏感信息永远不会离开路由器**，完整的 `config.json` 不会被复制到 NAS。
+   - `route` 段（在路由器上提取；有 `jq` 就用 `jq`，没有就用系统自带的 `ucode`，**路由器上不需要安装任何软件**）
+   - 被引用的本地规则集（在路由器上用 `/opt/open-box/bin/sing-box rule-set decompile` 转成文本）
+   - 节点服务器地址的 **sha256 指纹**（在路由器上计算，只用来过滤，地址本身不出路由器）
+
+   **节点、密码、UUID、订阅等敏感信息永远不会离开路由器**，完整的 `config.json` 不会被复制到 NAS；
+   如果路由器上既没有 `jq` 也没有 `ucode`，脚本会直接报错停止，而不是退而复制整个配置。
 2. 把规则转换成公开安全的 Shadowrocket 规则（`DIRECT` / `PROXY` / `REJECT`），
    只替换 `personal/rules.conf` 里下面两行之间的内容：
    ```
@@ -29,7 +30,7 @@
 安全保护：如果这次生成的规则比上次**少了 10% 以上**（上次至少 20 条时），会**停止、不上传**，
 并在日志里说明原因（防止路由器临时出错把规则清空）。
 
-NAS 上**不需要安装 git**，只用到自带的 `python3`、`curl`、`ssh`。
+NAS 上**不需要 git**（装了也不用），只用到自带的 `python3`、`curl`、`ssh`。
 
 ## 第一次设置（只做一次）
 
@@ -48,10 +49,13 @@ chmod 600 ~/router-sync/sync.env
 之后每次运行，脚本会自动从 GitHub 下载最新的转换程序，不用手动更新
 （如果想固定版本，可以在 `sync.env` 里设置 `CODE_DIR` 指向一份本地拷贝）。
 
-用文本编辑器打开 `~/router-sync/sync.env`，把 `ROUTER_HOST` 改成路由器的内网地址，其它一般不用改。
-这个文件只在 NAS 上，不会上传。
+`sync.env` 默认已经写好 `ROUTER_HOST=openbox-router`，直接使用 NAS 上 `~/.ssh/config` 里的
+`Host openbox-router` 设置（地址、root 用户、钥匙都在那里），`ROUTER_USER` / `ROUTER_PORT` / `ROUTER_SSH_KEY`
+留空即可。如果不用别名，也可以把 `ROUTER_HOST` 写成 IP，并填上这三项。这个文件只在 NAS 上，不会上传。
 
 ### 2. 创建 GitHub 令牌（只能改这个仓库）
+
+> 只做第 4 步“试跑”的话可以先跳过这一步；正式自动上传前再做。
 
 1. 打开 GitHub → 右上角头像 → **Settings** → 左下 **Developer settings**
    → **Personal access tokens** → **Fine-grained tokens** → **Generate new token**。
@@ -71,32 +75,41 @@ chmod 600 ~/.config/router-sync/github_pat
 
 脚本会检查这个文件的权限，别人可读时会拒绝运行；令牌不会出现在日志里。
 
-> 备选方案（部署密钥）：GitHub 仓库的 Deploy key 只能配合 git 使用，而这台 NAS 没装 git，
-> 所以默认用上面的令牌。如果以后装了 git，也可以改成仓库 Settings → Deploy keys 添加一把“允许写入”的
-> SSH 公钥，用 git 推送；那样就不需要令牌了（需要自行改脚本的上传步骤）。
+> 备选方案（部署密钥）：GitHub 仓库的 Deploy key 只能配合 git 使用。NAS 现在装有 git 2.39.5，但本脚本
+> 刻意不依赖 git，默认用上面的令牌。若想改用部署密钥，可在仓库 Settings → Deploy keys 添加一把“允许写入”的
+> SSH 公钥，再自行把脚本的上传步骤换成 git clone/commit/push；那样就不需要令牌了。
 
-### 3. NAS 登录路由器的钥匙（需要另行确认后再做）
+### 3. NAS 登录路由器的钥匙
 
-路由器用 dropbear SSH，登录用户是 `root`。钥匙约定放在 `~/.ssh/router_sync_ed25519`：
+路由器用 dropbear SSH，登录用户是 `root`，钥匙是 `~/.ssh/router_sync_ed25519`。
+如果 `~/.ssh/config` 里已经有下面这段、并且路由器指纹已在 `known_hosts` 里，这一步就已完成：
 
-```sh
-ssh-keygen -t ed25519 -N '' -f ~/.ssh/router_sync_ed25519 -C nas-router-sync
+```
+Host openbox-router
+  HostName 192.168.1.1
+  User root
+  IdentityFile ~/.ssh/router_sync_ed25519
+  IdentitiesOnly yes
 ```
 
-然后把 `~/.ssh/router_sync_ed25519.pub` 的内容加到路由器的 `/etc/dropbear/authorized_keys`
-（LuCI：系统 → 管理权 → SSH 密钥），并在 NAS 上手动连一次 `ssh -i ~/.ssh/router_sync_ed25519 root@路由器地址`
-确认指纹（脚本要求主机指纹已知）。
+检查一下（应当打印出 sing-box 版本，且不需要输入密码）：
 
-路由器需要有 `jq`：`opkg update && opkg install jq`。`sing-box` 会自动寻找，找不到时在 `sync.env`
-里写 `ROUTER_SINGBOX=/实际/路径/sing-box`。
+```sh
+ssh -o BatchMode=yes openbox-router '/opt/open-box/bin/sing-box version | head -1; command -v jq ucode'
+```
 
-### 4. 先试一次（不上传）
+路由器上**不需要安装 jq**：没有 jq 时自动使用系统自带的 `ucode`。`sing-box` 默认先找
+`/opt/open-box/bin/sing-box`，路径不同再在 `sync.env` 里写 `ROUTER_SINGBOX=/实际/路径/sing-box`。
+
+### 4. 先试一次（不上传，不需要令牌）
 
 ```sh
 DRY_RUN=1 SYNC_LOG_STDOUT=1 sh ~/router-sync/sync_router_rules.sh
 ```
 
-会打印将要做的改动和统计（例如跳过了多少设备规则、有没有不认识的出站名）。
+会打印将要做的改动和统计（例如跳过了多少设备规则、有没有不认识的出站名），最后一行是 `result=dry-run`
+（没有变化时是 `result=unchanged`）。试跑只从公开地址读取 `personal/rules.conf`，**不需要 GitHub 令牌、也不会上传**；
+正式运行（去掉 `DRY_RUN=1`）才需要第 2 步的令牌。
 
 ### 5. 设置每小时自动运行
 

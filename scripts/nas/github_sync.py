@@ -29,6 +29,7 @@ import sync_router_rules as srr  # noqa: E402
 
 COMMIT_MESSAGE = "Sync router rules (auto)"
 DEFAULT_API = "https://api.github.com"
+DEFAULT_RAW = "https://raw.githubusercontent.com"
 
 
 class GitHubError(Exception):
@@ -48,12 +49,15 @@ def read_token(path: Path) -> str:
 
 
 class GitHubClient:
-    def __init__(self, repo: str, branch: str, path: str, token: str, api: str = DEFAULT_API) -> None:
+    def __init__(
+        self, repo: str, branch: str, path: str, token: str, api: str = DEFAULT_API, raw: str = DEFAULT_RAW
+    ) -> None:
         self.repo = repo
         self.branch = branch
         self.path = path
         self._token = token
         self.api = api.rstrip("/")
+        self.raw = raw.rstrip("/")
 
     def __repr__(self) -> str:  # never leak the token via repr/logging
         return f"GitHubClient(repo={self.repo!r}, branch={self.branch!r}, path={self.path!r})"
@@ -61,7 +65,8 @@ class GitHubClient:
     def _request(self, method: str, url: str, body: dict | None = None) -> dict:
         data = json.dumps(body).encode("utf-8") if body is not None else None
         request = urllib.request.Request(url, data=data, method=method)
-        request.add_header("Authorization", f"Bearer {self._token}")
+        if self._token:
+            request.add_header("Authorization", f"Bearer {self._token}")
         request.add_header("Accept", "application/vnd.github+json")
         request.add_header("X-GitHub-Api-Version", "2022-11-28")
         request.add_header("User-Agent", "router-rule-sync")
@@ -82,6 +87,20 @@ class GitHubClient:
         return f"{self.api}/repos/{urllib.parse.quote(owner)}/{urllib.parse.quote(name)}/{suffix}"
 
     def get_file(self) -> tuple[str, str]:
+        if not self._token:
+            # Token-less (dry run only): read the public file from raw.githubusercontent.com,
+            # which has no API rate limit. No sha is needed because nothing is written.
+            owner, name = self.repo.split("/", 1)
+            url = "/".join(
+                [self.raw, urllib.parse.quote(owner), urllib.parse.quote(name), urllib.parse.quote(self.branch),
+                 urllib.parse.quote(self.path)]
+            )
+            request = urllib.request.Request(url, headers={"User-Agent": "router-rule-sync"})
+            try:
+                with urllib.request.urlopen(request, timeout=60) as response:
+                    return response.read().decode("utf-8"), ""
+            except urllib.error.HTTPError as exc:
+                raise GitHubError(exc.code, f"cannot read {url}") from None
         url = self._repo_url(
             "contents/" + urllib.parse.quote(self.path) + "?ref=" + urllib.parse.quote(self.branch)
         )
@@ -95,6 +114,8 @@ class GitHubClient:
         return raw.decode("utf-8"), sha
 
     def put_file(self, text: str, sha: str, message: str) -> str:
+        if not self._token:
+            raise GitHubError(401, "no token: refusing to write (dry run only)")
         url = self._repo_url("contents/" + urllib.parse.quote(self.path))
         body = {
             "message": message,
@@ -134,8 +155,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPO", "cc519979682-cyber/-"))
     parser.add_argument("--branch", default=os.environ.get("GITHUB_BRANCH", "main"))
     parser.add_argument("--path", default="personal/rules.conf")
-    parser.add_argument("--token-file", type=Path, required=True)
+    parser.add_argument("--token-file", type=Path, help="Required unless --dry-run (public repo is read anonymously)")
     parser.add_argument("--api", default=DEFAULT_API)
+    parser.add_argument("--raw", default=DEFAULT_RAW, help="raw file host used for token-less dry runs")
     parser.add_argument("--outbound-map", type=Path, default=srr.DEFAULT_OUTBOUND_MAP)
     parser.add_argument("--outbound-map-override", type=Path)
     parser.add_argument("--strict", action="store_true")
@@ -167,7 +189,13 @@ def main(argv: list[str] | None = None) -> int:
                 allow_large_deletion=args.allow_large_deletion,
             )
 
-        client = GitHubClient(args.repo, args.branch, args.path, read_token(args.token_file), args.api)
+        if args.token_file is not None:
+            token = read_token(args.token_file)
+        elif args.dry_run:
+            token = ""
+        else:
+            raise SystemExit("ERROR --token-file is required unless --dry-run")
+        client = GitHubClient(args.repo, args.branch, args.path, token, args.api, args.raw)
         result = sync_once(client, convert, dry_run=args.dry_run)
     except srr.GuardError as exc:
         print("\n".join(report.lines()), file=sys.stderr)
