@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline tests for the router (sing-box) -> rules.conf sync. Stdlib only."""
 
+import base64
 import contextlib
 import io
 import json
@@ -464,6 +465,147 @@ GEOIP,CN,DIRECT
         self.assertNotIn("DOMAIN-SUFFIX,bing.com,DIRECT", pushed)
         self.assertIn("DOMAIN-SUFFIX,bing.com,PROXY,force-remote-dns", block_of(pushed))
         self.assertIn("DOMAIN-SUFFIX,chenxuning.cc,DIRECT", outside_of(pushed))
+
+
+class FakeResponse:
+    def __init__(self, payload):
+        self.payload = json.dumps(payload).encode("utf-8")
+
+    def read(self):
+        return self.payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def http_error(code, message="boom"):
+    import urllib.error
+
+    return urllib.error.HTTPError("https://api.github.com/x", code, message, {}, io.BytesIO(json.dumps({"message": message}).encode()))
+
+
+class GitHubRetryTests(unittest.TestCase):
+    """Transport retries: network errors / timeouts / 5xx retried (3 attempts), 4xx never."""
+
+    def setUp(self):
+        import urllib.request
+
+        self.urllib_request = urllib.request
+        self.original = urllib.request.urlopen
+        self.calls = []
+        self.sleeps = []
+        self.outcomes = []
+
+        def fake_urlopen(request, timeout=None):
+            self.calls.append(request)
+            outcome = self.outcomes.pop(0)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return FakeResponse(outcome)
+
+        urllib.request.urlopen = fake_urlopen
+
+    def tearDown(self):
+        self.urllib_request.urlopen = self.original
+
+    def client(self, token="tok"):
+        return github_sync.GitHubClient("o/r", "main", "personal/rules.conf", token, sleep=self.sleeps.append, retry_delay=30)
+
+    def meta(self, text="hello\n"):
+        return {"sha": "abc", "encoding": "base64", "content": base64.b64encode(text.encode()).decode()}
+
+    def test_connection_reset_twice_then_success(self):
+        import urllib.error
+
+        self.outcomes = [urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer")),
+                         ConnectionResetError(104, "Connection reset by peer"), self.meta()]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(self.client().get_file(), ("hello\n", "abc"))
+        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(self.sleeps, [30, 30])
+        self.assertEqual(err.getvalue().count("WARNING GitHub GET"), 2)
+        self.assertIn("retry 1/2 in 30s", err.getvalue())
+        self.assertNotIn("tok", err.getvalue())
+
+    def test_gives_up_after_three_attempts(self):
+        import socket
+
+        self.outcomes = [socket.timeout("timed out"), TimeoutError("timed out"), http_error(503)]
+        with self.assertRaises(github_sync.GitHubError) as ctx, contextlib.redirect_stderr(io.StringIO()) as err:
+            self.client().get_file()
+        self.assertEqual(ctx.exception.status, 503)
+        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(self.sleeps, [30, 30])
+        self.assertIn("failed after 3 attempts", err.getvalue())
+
+    def test_5xx_retried(self):
+        self.outcomes = [http_error(502), self.meta("x\n")]
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self.client().get_file()[0], "x\n")
+        self.assertEqual(len(self.calls), 2)
+
+    def test_4xx_not_retried(self):
+        for code in (401, 403, 404):
+            self.calls.clear()
+            self.sleeps.clear()
+            self.outcomes = [http_error(code)]
+            with self.assertRaises(github_sync.GitHubError) as ctx:
+                self.client().get_file()
+            self.assertEqual(ctx.exception.status, code)
+            self.assertEqual(len(self.calls), 1)
+            self.assertEqual(self.sleeps, [])
+
+    def test_put_retried_on_reset_but_409_left_to_sync_once(self):
+        self.outcomes = [ConnectionResetError(104, "reset"), {"commit": {"sha": "c1"}}]
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self.client().put_file("t", "abc", "m"), "c1")
+        self.assertEqual([c.get_method() for c in self.calls], ["PUT", "PUT"])
+        self.calls.clear()
+        self.outcomes = [http_error(409, "sha mismatch")]
+        with self.assertRaises(github_sync.GitHubError) as ctx:
+            self.client().put_file("t", "abc", "m")
+        self.assertEqual(ctx.exception.status, 409)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_full_sync_survives_resets_and_lost_put_response(self):
+        # GET reset, GET ok, PUT reset (applied server-side), PUT 409, re-GET shows our text -> unchanged
+        synced = run_sync(HAND_KEPT)[0]
+        self.outcomes = [ConnectionResetError(104, "reset"), self.meta(HAND_KEPT), ConnectionResetError(104, "reset"),
+                         http_error(409, "sha mismatch"), self.meta(synced)]
+        with contextlib.redirect_stderr(io.StringIO()):
+            result = github_sync.sync_once(self.client(), lambda text: run_sync(text)[0])
+        self.assertEqual(result, "unchanged")
+        self.assertEqual([c.get_method() for c in self.calls], ["GET", "GET", "PUT", "PUT", "GET"])
+
+    def test_tokenless_read_uses_api_contents_without_auth(self):
+        self.outcomes = [self.meta()]
+        self.client(token="").get_file()
+        request = self.calls[0]
+        self.assertTrue(request.full_url.startswith("https://api.github.com/repos/o/r/contents/personal/rules.conf"))
+        self.assertIsNone(request.get_header("Authorization"))
+        self.assertNotIn("raw.githubusercontent.com", request.full_url)
+
+    def test_token_sent_when_present(self):
+        self.outcomes = [self.meta()]
+        self.client(token="tok").get_file()
+        self.assertEqual(self.calls[0].get_header("Authorization"), "Bearer tok")
+
+    def test_retry_delay_from_env(self):
+        old = os.environ.get("GITHUB_RETRY_DELAY")
+        try:
+            os.environ["GITHUB_RETRY_DELAY"] = "0"
+            self.assertEqual(github_sync.GitHubClient("o/r", "main", "p", "").retry_delay, 0.0)
+            os.environ["GITHUB_RETRY_DELAY"] = "bogus"
+            self.assertEqual(github_sync.GitHubClient("o/r", "main", "p", "").retry_delay, 30.0)
+        finally:
+            if old is None:
+                os.environ.pop("GITHUB_RETRY_DELAY", None)
+            else:
+                os.environ["GITHUB_RETRY_DELAY"] = old
 
 
 class UnknownTagTests(unittest.TestCase):

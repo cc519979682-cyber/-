@@ -60,7 +60,10 @@ ROUTER_SINGBOX="${ROUTER_SINGBOX:-}"
 GITHUB_REPO="${GITHUB_REPO:-cc519979682-cyber/-}"
 GITHUB_BRANCH="${GITHUB_BRANCH:-main}"
 GITHUB_TOKEN_FILE="${GITHUB_TOKEN_FILE:-$HOME/.config/router-sync/github_pat}"
-CODE_URL="${CODE_URL:-https://codeload.github.com/$GITHUB_REPO/tar.gz/refs/heads/$GITHUB_BRANCH}"
+# Code is fetched through api.github.com (raw.githubusercontent.com resets connections from the NAS).
+CODE_URL="${CODE_URL:-https://api.github.com/repos/$GITHUB_REPO/tarball/$GITHUB_BRANCH}"
+GITHUB_RETRY_DELAY="${GITHUB_RETRY_DELAY:-30}"
+export GITHUB_RETRY_DELAY
 
 case "$ROUTER_CONFIG$ROUTER_SINGBOX" in
   *[!A-Za-z0-9._/-]*) fail "ROUTER_CONFIG / ROUTER_SINGBOX may only contain A-Z a-z 0-9 . _ / -" ;;
@@ -82,13 +85,37 @@ fi
 
 log "start"
 
+# download URL to FILE: 3 attempts, $GITHUB_RETRY_DELAY seconds apart, each retry logged.
+# The token (if present) goes into a 600 header file in $WORK, never onto the command line.
+fetch_with_retry() {
+  _url="$1"; _out="$2"; _n=1
+  set -- -fsSL --connect-timeout 20 --max-time 180 -H "Accept: application/vnd.github+json" -H "User-Agent: router-rule-sync"
+  if [ "$USE_TOKEN" = "1" ]; then
+    printf 'Authorization: Bearer %s\n' "$(cat "$GITHUB_TOKEN_FILE")" > "$WORK/auth.hdr"
+    set -- "$@" -H "@$WORK/auth.hdr"
+  fi
+  while :; do
+    if curl "$@" "$_url" -o "$_out"; then
+      rm -f "$WORK/auth.hdr"
+      return 0
+    fi
+    if [ "$_n" -ge 3 ]; then
+      rm -f "$WORK/auth.hdr"
+      return 1
+    fi
+    log "WARNING download failed (attempt $_n/3), retrying in ${GITHUB_RETRY_DELAY}s: ${_url%%\?*}"
+    sleep "$GITHUB_RETRY_DELAY"
+    _n=$((_n + 1))
+  done
+}
+
 # ---- converter code: fresh copy of main each run (or a fixed local copy)
 if [ -n "${CODE_DIR:-}" ]; then
   SRC="$CODE_DIR"
 else
   SRC="$WORK/src"
   mkdir -p "$SRC"
-  curl -fsSL --retry 3 --max-time 120 "$CODE_URL" -o "$WORK/src.tgz" || fail "download of converter code failed"
+  fetch_with_retry "$CODE_URL" "$WORK/src.tgz" || fail "download of converter code failed (3 attempts)"
   tar -xzf "$WORK/src.tgz" -C "$SRC" --strip-components=1 || fail "cannot unpack converter code"
 fi
 [ -f "$SRC/scripts/sync_router_rules.py" ] || fail "converter missing in $SRC"
