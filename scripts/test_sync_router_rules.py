@@ -96,7 +96,8 @@ class ConversionTests(unittest.TestCase):
         self.assertIn("DOMAIN-KEYWORD,openai,PROXY,force-remote-dns", block)
         self.assertIn("IP-CIDR,8.8.4.0/24,PROXY,no-resolve", block)
         self.assertIn("IP-CIDR6,2001:4860::/32,PROXY,no-resolve", block)
-        self.assertIn("IP-CIDR,114.114.114.0/24,DIRECT,no-resolve", block)
+        # IP DIRECT ranges from rule-set expansion are skipped by default (GEOIP,CN covers them)
+        self.assertNotIn("IP-CIDR,114.114.114.0/24,DIRECT,no-resolve", block)
         # leading dot of a sing-box suffix is dropped
         self.assertIn("DOMAIN-SUFFIX,proxy-site.example,PROXY,force-remote-dns", block)
         for line in block:
@@ -148,12 +149,86 @@ class ConversionTests(unittest.TestCase):
         joined = "\n".join(self.block)
         self.assertNotIn("9.9.9.9", joined)
         self.assertNotIn("node.example-vps.net", joined)
-        self.assertEqual(self.report.counts["skipped_node_address"], 2)
+        self.assertEqual(self.report.counts["skipped_node_address"], 1)  # the domain
+        self.assertGreaterEqual(self.report.counts["skipped_host_ip"], 1)  # 9.9.9.9/32 is a host IP anyway
 
     def test_router_first_match_wins_within_block(self):
         # example-bank.cn appears DIRECT first, then PROXY later: keep DIRECT only.
         matches = [line for line in self.block if ",example-bank.cn," in line]
         self.assertEqual(matches, ["DOMAIN-SUFFIX,example-bank.cn,DIRECT"])
+
+
+class HostIpTests(unittest.TestCase):
+    def test_single_hosts_and_tiny_ranges_never_published(self):
+        route = {"rules": [
+            {"ip_cidr": ["1.2.3.4/32", "1.2.3.8/29", "1.2.3.0/28", "5.6.7.8"], "outbound": "direct"},
+            {"ip_cidr": ["2001:4860::1/128", "2001:4860::100/120", "2001:4860::200/119", "8.8.8.8/31"], "outbound": "Proxy"},
+        ]}
+        text, report = run_sync(HAND_KEPT, route=route)
+        self.assertEqual(block_of(text), [
+            "IP-CIDR,1.2.3.0/28,DIRECT,no-resolve",
+            "IP-CIDR6,2001:4860::200/119,PROXY,no-resolve",
+        ])
+        self.assertEqual(report.counts["skipped_host_ip"], 6)
+        self.assertNotIn("1.2.3.4", text)
+        self.assertNotIn("5.6.7.8", text)
+
+    def test_hand_kept_host_ips_outside_block_untouched(self):
+        route = {"rules": [{"ip_cidr": ["8.149.128.52/32"], "outbound": "direct"}]}
+        text, _ = run_sync(HAND_KEPT, route=route)
+        self.assertIn("IP-CIDR,8.149.128.52/32,DIRECT", outside_of(text))
+        self.assertEqual(block_of(text), [])
+
+
+class RuleSetIpDirectTests(unittest.TestCase):
+    ROUTE = {
+        "rule_set": [
+            {"tag": "cn-ip", "type": "inline", "rules": [{"ip_cidr": ["114.114.114.0/24", "2400:3200::/32"]}]},
+            {"tag": "telegram-ip", "type": "inline", "rules": [{"ip_cidr": ["91.108.4.0/22"], "domain_suffix": ["t.me"]}]},
+            {"tag": "cn-site", "type": "inline", "rules": [{"domain_suffix": ["example.cn"], "ip_cidr": ["1.1.8.0/24"]}]},
+        ],
+        "rules": [
+            {"action": "bypass"},
+            {"ip_cidr": ["8.8.8.0/24"], "outbound": "direct"},
+            {"rule_set": ["cn-ip"], "outbound": "direct"},
+            {"rule_set": ["telegram-ip"], "outbound": "Telegram"},
+            {"type": "logical", "mode": "or", "rules": [{"rule_set": ["cn-site"]}], "outbound": "Domestic"},
+        ],
+    }
+
+    def test_default_skips_ruleset_ip_direct_only(self):
+        text, report = run_sync(HAND_KEPT, route=self.ROUTE)
+        self.assertEqual(block_of(text), [
+            "IP-CIDR,8.8.8.0/24,DIRECT,no-resolve",  # inline IP DIRECT kept
+            "DOMAIN-SUFFIX,t.me,PROXY,force-remote-dns",
+            "IP-CIDR,91.108.4.0/22,PROXY,no-resolve",  # rule-set IP PROXY kept
+            "DOMAIN-SUFFIX,example.cn,DIRECT",  # rule-set domains kept
+        ])
+        self.assertEqual(report.counts["skipped_ip_direct_ruleset"], 3)
+
+    def test_flag_includes_ruleset_ip_direct(self):
+        text, report = run_sync(HAND_KEPT, route=self.ROUTE, skip_ruleset_ip_direct=False)
+        block = block_of(text)
+        self.assertIn("IP-CIDR,114.114.114.0/24,DIRECT,no-resolve", block)
+        self.assertIn("IP-CIDR6,2400:3200::/32,DIRECT,no-resolve", block)
+        self.assertIn("IP-CIDR,1.1.8.0/24,DIRECT,no-resolve", block)
+        self.assertEqual(report.counts["skipped_ip_direct_ruleset"], 0)
+
+    def test_bypass_action_ignored_quietly(self):
+        _, report = run_sync(HAND_KEPT, route=self.ROUTE)
+        self.assertEqual(report.counts["ignored_action_bypass"], 1)
+        self.assertEqual(report.warnings, [])
+        self.assertNotIn("WARNING", "\n".join(report.lines()))
+
+    def test_cli_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rules = Path(tmp) / "rules.conf"
+            rules.write_text(HAND_KEPT, encoding="utf-8")
+            route = Path(tmp) / "route.json"
+            route.write_text(json.dumps({"route": self.ROUTE}), encoding="utf-8")
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(srr.main([str(route), "--rules", str(rules), "--include-ruleset-ip-direct"]), 0)
+            self.assertIn("114.114.114.0/24", rules.read_text(encoding="utf-8"))
 
 
 class UnknownTagTests(unittest.TestCase):

@@ -112,7 +112,12 @@ NON_MATCHER_FIELDS = {
     "rewrite_ttl",
     "client_subnet",
 }
-IGNORED_ACTIONS = {"sniff", "hijack-dns", "resolve", "route-options"}
+IGNORED_ACTIONS = {"sniff", "hijack-dns", "resolve", "route-options", "bypass"}
+# Never publish single hosts / tiny ranges: they are likely home or own-server addresses.
+HOST_IPV4_MIN_PREFIX = 29
+HOST_IPV6_MIN_PREFIX = 120
+# Internal marker for IP matchers that came from an expanded rule_set.
+RULESET_IP = "IP-CIDR@rule_set"
 
 # Defense in depth: the bundle must never contain secrets or outbound details.
 FORBIDDEN_KEYS = {
@@ -383,11 +388,15 @@ class Converter:
         resolve_ruleset: Callable[[str], list | None],
         report: Report,
         drop_hashes: set[str] | None = None,
+        skip_ruleset_ip_direct: bool = True,
     ) -> None:
         self.outbound_map = outbound_map
         self.resolve_ruleset = resolve_ruleset
         self.report = report
         self.drop_hashes = drop_hashes or set()
+        # IP DIRECT ranges from rule-sets are (almost) all China ranges, already
+        # covered by GEOIP,CN,DIRECT; publishing them would add ~10k lines.
+        self.skip_ruleset_ip_direct = skip_ruleset_ip_direct
 
     # Matchers ------------------------------------------------------------
     def matchers(self, rule: dict, allow_rule_set: bool, depth: int = 0) -> list[tuple[str, str]] | None:
@@ -445,7 +454,7 @@ class Converter:
             for headless in headless_rules:
                 sub = self.matchers(headless, allow_rule_set=False, depth=depth + 1)
                 if sub:
-                    found.extend(sub)
+                    found.extend((RULESET_IP if t == "IP-CIDR" else t, v) for t, v in sub)
         if not found:
             counts["skipped_no_representable_matcher"] += 1
             return None
@@ -511,6 +520,10 @@ class Converter:
             if is_non_global(network):
                 counts["skipped_private_cidr"] += 1
                 return None
+            host_prefix = HOST_IPV4_MIN_PREFIX if network.version == 4 else HOST_IPV6_MIN_PREFIX
+            if network.prefixlen >= host_prefix:
+                counts["skipped_host_ip"] += 1
+                return None
             candidates = {sha256_text(value), sha256_text(str(network)), sha256_text(str(network.network_address))}
             if candidates & self.drop_hashes:
                 counts["skipped_node_address"] += 1
@@ -559,6 +572,11 @@ class Converter:
                 continue
             self.report.counts["route_rules_used"] += 1
             for rule_type, value in found:
+                if rule_type == RULESET_IP:
+                    if policy == "DIRECT" and self.skip_ruleset_ip_direct:
+                        self.report.counts["skipped_ip_direct_ruleset"] += 1
+                        continue
+                    rule_type = "IP-CIDR"
                 cleaned = self.clean_entry(rule_type, value)
                 if cleaned is None:
                     continue
@@ -668,12 +686,15 @@ def sync_text(
     guard_min_rules: int = DEFAULT_GUARD_MIN_RULES,
     allow_large_deletion: bool = False,
     max_lines: int = DEFAULT_MAX_LINES,
+    skip_ruleset_ip_direct: bool = True,
 ) -> str:
     """Return the new rules.conf text (may equal the input). Raises SyncError."""
 
     before, old_block, after = sr.split_router_sync_block(rules_text)
     outside = [*before, *after]
-    entries = Converter(outbound_map, resolve_ruleset, report, drop_hashes).convert(route)
+    entries = Converter(
+        outbound_map, resolve_ruleset, report, drop_hashes, skip_ruleset_ip_direct=skip_ruleset_ip_direct
+    ).convert(route)
     if report.missing_rulesets and not allow_missing_rulesets:
         raise MissingRuleSetError(
             "Referenced rule_set(s) missing from bundle: " + ", ".join(sorted(report.missing_rulesets))
@@ -716,6 +737,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--guard-min-rules", type=int, default=DEFAULT_GUARD_MIN_RULES)
     parser.add_argument("--allow-large-deletion", action="store_true")
     parser.add_argument("--max-lines", type=int, default=DEFAULT_MAX_LINES)
+    parser.add_argument(
+        "--include-ruleset-ip-direct",
+        action="store_true",
+        help="Also publish IP-CIDR DIRECT rules expanded from rule-sets (default: skipped, GEOIP,CN covers them)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print the diff, write nothing")
     args = parser.parse_args(argv)
 
@@ -739,6 +765,7 @@ def main(argv: list[str] | None = None) -> int:
             guard_min_rules=args.guard_min_rules,
             allow_large_deletion=args.allow_large_deletion,
             max_lines=args.max_lines,
+            skip_ruleset_ip_direct=not args.include_ruleset_ip_direct,
         )
     except GuardError as exc:
         print("\n".join(report.lines()), file=sys.stderr)
