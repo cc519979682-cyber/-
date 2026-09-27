@@ -7,7 +7,8 @@
 
 1. 通过 SSH **只读**登录路由器，只取出“分流规则”部分：
    - `route` 段（在路由器上提取；有 `jq` 就用 `jq`，没有就用系统自带的 `ucode`，**路由器上不需要安装任何软件**）
-   - 被引用的本地规则集（在路由器上用 `/opt/open-box/bin/sing-box rule-set decompile` 转成文本）
+   - 被引用的本地规则集（在路由器上用 `/opt/open-box/bin/sing-box rule-set decompile` 转成文本；
+     默认不会用到，只有打开 `INCLUDE_RULE_SETS=1` 时才会展开，见下文）
    - 节点服务器地址的 **sha256 指纹**（在路由器上计算，只用来过滤，地址本身不出路由器）
 
    **节点、密码、UUID、订阅等敏感信息永远不会离开路由器**，完整的 `config.json` 不会被复制到 NAS；
@@ -23,13 +24,21 @@
 3. 只有内容真的变了，才通过 GitHub 网页接口更新文件，提交信息为 `Sync router rules (auto)`。
    GitHub Actions 随后会自动重新生成 Shadowrocket / v2rayN 配置。
 
+**默认只同步你自己写的规则**：只取路由器 `route.rules` 里直接写出的 `domain` / `domain_suffix` /
+`domain_keyword` / `ip_cidr`（一般几十到一百来条）。路由规则里引用的规则集（`rule_set`，例如 geosite、
+各类第三方分流列表，共 96 个）**默认不展开**，因为那会多出几千行（日志里 `expanded_rule_set_refs=0`，
+`skipped_rule_set_refs=<跳过的引用数>`，只引用规则集、没有自己写匹配项的规则计为 `skipped_rule_set_only_rules`）。
+同一条路由规则里如果既有自己写的域名又引用了规则集，自己写的部分照常同步。
+如确实想把规则集也展开发布，在 `sync.env` 里设置 `INCLUDE_RULE_SETS=1`（手机上的 Shadowrocket
+本来就有底版规则，一般不需要）。
+
 不会被公开的规则：按设备（源 IP、端口、进程、用户、入站）的规则、走住宅出口
 （`Webshare-US-Residential`、`AI-Residential`）的规则、内网 IP 段、指向节点地址的规则、
 以及无法准确表达的规则（取反、AND 组合、正则、限定端口/协议）。
 另外：
 - **单个主机 IP 一律不公开**：IPv4 前缀 ≥ /29、IPv6 前缀 ≥ /120 的 IP 规则（很可能是自家或自有服务器的公网 IP），
   不管走哪个出站都跳过（日志计数 `skipped_host_ip`）。手写在标记块外的 IP 规则不受影响。
-- **规则集里的“直连 IP 段”默认不公开**：这些几乎都是中国 IP 段，生成的配置里已有 `GEOIP,CN,DIRECT` 覆盖，
+- （仅在 `INCLUDE_RULE_SETS=1` 时相关）**规则集里的“直连 IP 段”默认不公开**：这些几乎都是中国 IP 段，生成的配置里已有 `GEOIP,CN,DIRECT` 覆盖，
   全部写出会多出约一万行（计数 `skipped_ip_direct_ruleset`）。直接写在路由规则里的直连 IP、以及走代理的 IP 段
   （例如 Telegram）照常保留。如确实需要，在 `sync.env` 里设置 `INCLUDE_RULESET_IP_DIRECT=1`。
 

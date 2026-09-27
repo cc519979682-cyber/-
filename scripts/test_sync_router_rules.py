@@ -83,8 +83,10 @@ class OutboundMapTests(unittest.TestCase):
 
 
 class ConversionTests(unittest.TestCase):
+    """Full conversion with the opt-in rule_set expansion (--include-rule-sets)."""
+
     def setUp(self):
-        self.text, self.report = run_sync(HAND_KEPT)
+        self.text, self.report = run_sync(HAND_KEPT, include_rule_sets=True)
         self.block = block_of(self.text)
 
     def test_field_mapping_and_conventions(self):
@@ -197,7 +199,7 @@ class RuleSetIpDirectTests(unittest.TestCase):
     }
 
     def test_default_skips_ruleset_ip_direct_only(self):
-        text, report = run_sync(HAND_KEPT, route=self.ROUTE)
+        text, report = run_sync(HAND_KEPT, route=self.ROUTE, include_rule_sets=True)
         self.assertEqual(block_of(text), [
             "IP-CIDR,8.8.8.0/24,DIRECT,no-resolve",  # inline IP DIRECT kept
             "DOMAIN-SUFFIX,t.me,PROXY,force-remote-dns",
@@ -207,7 +209,7 @@ class RuleSetIpDirectTests(unittest.TestCase):
         self.assertEqual(report.counts["skipped_ip_direct_ruleset"], 3)
 
     def test_flag_includes_ruleset_ip_direct(self):
-        text, report = run_sync(HAND_KEPT, route=self.ROUTE, skip_ruleset_ip_direct=False)
+        text, report = run_sync(HAND_KEPT, route=self.ROUTE, skip_ruleset_ip_direct=False, include_rule_sets=True)
         block = block_of(text)
         self.assertIn("IP-CIDR,114.114.114.0/24,DIRECT,no-resolve", block)
         self.assertIn("IP-CIDR6,2400:3200::/32,DIRECT,no-resolve", block)
@@ -227,8 +229,78 @@ class RuleSetIpDirectTests(unittest.TestCase):
             route = Path(tmp) / "route.json"
             route.write_text(json.dumps({"route": self.ROUTE}), encoding="utf-8")
             with contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(srr.main([str(route), "--rules", str(rules), "--include-ruleset-ip-direct"]), 0)
+                self.assertEqual(srr.main([str(route), "--rules", str(rules), "--include-rule-sets", "--include-ruleset-ip-direct"]), 0)
             self.assertIn("114.114.114.0/24", rules.read_text(encoding="utf-8"))
+
+
+class InlineOnlyDefaultTests(unittest.TestCase):
+    """Default: only matchers written inline in route.rules; rule_set refs are not expanded."""
+
+    def setUp(self):
+        self.text, self.report = run_sync(HAND_KEPT)
+        self.block = block_of(self.text)
+
+    def test_only_inline_matchers_published(self):
+        self.assertEqual(self.block, [
+            "DOMAIN,login.example-bank.com,DIRECT",
+            "DOMAIN-SUFFIX,example-bank.cn,DIRECT",
+            "DOMAIN-KEYWORD,examplecdn,DIRECT",
+            "DOMAIN-SUFFIX,proxy-site.example,PROXY,force-remote-dns",
+            "IP-CIDR,8.8.4.0/24,PROXY,no-resolve",
+            "IP-CIDR6,2001:4860::/32,PROXY,no-resolve",
+            "DOMAIN-SUFFIX,or-one.example,PROXY,force-remote-dns",
+            "DOMAIN,or-two.example,PROXY,force-remote-dns",
+        ])
+
+    def test_rule_set_contents_not_published(self):
+        joined = "\n".join(self.block)
+        for needle in ("sora-example.ai", "openai", "ads.example-tracker.com", "example.cn,", "fallback-direct.example"):
+            self.assertNotIn(needle, joined)
+
+    def test_counters(self):
+        counts = self.report.counts
+        self.assertEqual(counts["expanded_rule_set_refs"], 0)
+        # fixture refs: geosite-openai, inline-ads, geosite-cn-lite + obflip-fallback, remote-thing
+        self.assertEqual(counts["skipped_rule_set_refs"], 5)
+        self.assertEqual(counts["skipped_rule_set_only_rules"], 4)
+        self.assertEqual(counts["skipped_remote_rule_set"], 0)
+        rendered = self.report.lines()
+        self.assertIn("expanded_rule_set_refs=0", rendered)
+        self.assertIn("skipped_rule_set_refs=5", rendered)
+
+    def test_missing_rulesets_irrelevant_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text, report = run_sync(HAND_KEPT, rulesets_dir=Path(tmp))
+        self.assertEqual(report.missing_rulesets, set())
+        self.assertEqual(block_of(text), self.block)
+
+    def test_inline_matchers_kept_when_rule_also_has_rule_set(self):
+        route = {"rules": [{"domain_suffix": ["mine.example"], "rule_set": ["x"], "outbound": "Proxy"}]}
+        text, report = run_sync(HAND_KEPT, route=route)
+        self.assertEqual(block_of(text), ["DOMAIN-SUFFIX,mine.example,PROXY,force-remote-dns"])
+        self.assertEqual(report.counts["skipped_rule_set_refs"], 1)
+        self.assertEqual(report.missing_rulesets, set())
+
+    def test_filters_still_apply_to_inline(self):
+        route = {"rules": [{"ip_cidr": ["1.2.3.4/32", "192.168.1.0/24", "8.8.8.0/24"],
+                            "domain_suffix": ["token.example"], "outbound": "direct"}]}
+        text, report = run_sync(HAND_KEPT, route=route)
+        self.assertEqual(block_of(text), ["IP-CIDR,8.8.8.0/24,DIRECT,no-resolve"])
+        self.assertEqual(report.counts["skipped_host_ip"], 1)
+        self.assertEqual(report.counts["skipped_private_cidr"], 1)
+        self.assertEqual(report.counts["skipped_sensitive_word"], 1)
+
+    def test_cli_default_and_opt_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rules = Path(tmp) / "rules.conf"
+            base = [str(FIXTURE / "route.json"), "--rulesets-dir", str(FIXTURE / "rulesets"), "--rules", str(rules)]
+            for extra, expect in (([], False), (["--include-rule-sets"], True)):
+                rules.write_text(HAND_KEPT, encoding="utf-8")
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(srr.main(base + extra), 0)
+                self.assertEqual("sora-example.ai" in rules.read_text(encoding="utf-8"), expect)
+                self.assertIn("expanded_rule_set_refs=0" if not expect else "expanded_rule_set_refs=4", err.getvalue())
 
 
 class UnknownTagTests(unittest.TestCase):
@@ -293,8 +365,10 @@ class InputSafetyTests(unittest.TestCase):
     def test_missing_ruleset_fails_unless_allowed(self):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(srr.MissingRuleSetError):
-                run_sync(HAND_KEPT, rulesets_dir=Path(tmp))
-            text, report = run_sync(HAND_KEPT, rulesets_dir=Path(tmp), allow_missing_rulesets=True)
+                run_sync(HAND_KEPT, rulesets_dir=Path(tmp), include_rule_sets=True)
+            text, report = run_sync(
+                HAND_KEPT, rulesets_dir=Path(tmp), allow_missing_rulesets=True, include_rule_sets=True
+            )
             self.assertIn("geosite-openai", report.missing_rulesets)
             self.assertIn("DOMAIN-KEYWORD,examplecdn,DIRECT", block_of(text))
 
@@ -351,7 +425,7 @@ class MarkerTests(unittest.TestCase):
             sr.split_router_sync_block(f"{sr.ROUTER_SYNC_BEGIN}\nDOMAIN,a,DIRECT\n")
 
     def test_dedupe_against_hand_kept_lines(self):
-        text, report = run_sync(HAND_KEPT)
+        text, report = run_sync(HAND_KEPT, include_rule_sets=True)
         block = "\n".join(block_of(text))
         # openai.com / chatgpt.com / qq.com are hand-kept already
         self.assertNotIn(",openai.com,", block)
@@ -372,7 +446,7 @@ class MarkerTests(unittest.TestCase):
         self.assertFalse(any("router-sync" in rule for rule in rules))
 
     def test_refresh_from_preserves_router_block(self):
-        seeded, _ = run_sync(HAND_KEPT)
+        seeded, _ = run_sync(HAND_KEPT, include_rule_sets=True)
         refreshed = sr.refreshed_personal_text(
             ["DOMAIN-SUFFIX,new-hand.example,DIRECT", "DOMAIN-KEYWORD,examplecdn,DIRECT", "GEOIP,CN,DIRECT"], seeded
         )
