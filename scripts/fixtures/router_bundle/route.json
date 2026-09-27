@@ -1,0 +1,42 @@
+{
+  "route": {
+    "final": "迁移兜底",
+    "auto_detect_interface": true,
+    "default_domain_resolver": {"server": "dns-local"},
+    "rule_set": [
+      {"tag": "geosite-openai", "type": "local", "format": "binary", "path": "/opt/open-box/data/rulesets/geosite-openai.srs"},
+      {"tag": "geosite-cn-lite", "type": "local", "format": "binary", "path": "/opt/open-box/data/rulesets/geosite-cn-lite.srs"},
+      {"tag": "obflip-fallback", "type": "local", "format": "source", "path": "/opt/open-box/data/flip/obflip-fallback.json"},
+      {"tag": "inline-ads", "type": "inline", "rules": [{"domain_suffix": ["ads.example-tracker.com"]}]},
+      {"tag": "remote-thing", "type": "remote", "format": "binary", "url": "https://example.com/remote.srs"}
+    ],
+    "rules": [
+      {"action": "sniff"},
+      {"protocol": "dns", "action": "hijack-dns"},
+      {"action": "resolve", "server": "dns-local"},
+      {"ip_is_private": true, "outbound": "DIRECT"},
+      {"source_ip_cidr": ["192.168.50.23/32"], "outbound": "AI-Residential"},
+      {"source_ip_cidr": ["192.168.50.0/24"], "domain_suffix": ["kid-games.example"], "action": "reject"},
+      {"process_name": ["Steam.exe"], "outbound": "Steam"},
+      {"domain_suffix": ["example-bank.cn"], "domain": ["login.example-bank.com"], "outbound": "Domestic"},
+      {"domain_keyword": ["examplecdn"], "action": "route", "outbound": "direct"},
+      {"domain_suffix": ["residential-only.example"], "action": "route", "outbound": "Webshare-US-Residential"},
+      {"rule_set": ["geosite-openai"], "action": "route", "outbound": "OpenAI"},
+      {"rule_set": ["inline-ads"], "action": "reject", "method": "default"},
+      {"domain_suffix": ["mystery.example"], "outbound": "Some-Node-203.0.113.9-SS"},
+      {"domain_suffix": [".proxy-site.example"], "domain_regex": ["^foo[0-9]+\\.example$"], "outbound": "Proxy"},
+      {"ip_cidr": ["10.0.0.0/8", "198.51.100.7/32", "8.8.4.0/24", "2001:4860::/32"], "outbound": "Proxy"},
+      {"ip_cidr": ["9.9.9.9/32"], "outbound": "DIRECT"},
+      {"domain": ["node.example-vps.net"], "outbound": "DIRECT"},
+      {"domain_suffix": ["inverted.example"], "invert": true, "outbound": "Proxy"},
+      {"type": "logical", "mode": "and", "rules": [{"domain_suffix": ["a.example"]}, {"port": [443]}], "outbound": "Proxy"},
+      {"type": "logical", "mode": "or", "rules": [{"domain_suffix": ["or-one.example"]}, {"domain": ["or-two.example"]}], "outbound": "Proxy"},
+      {"port": [5222], "domain_suffix": ["xmpp.example"], "outbound": "Proxy"},
+      {"domain_suffix": ["example-bank.cn"], "outbound": "Proxy"},
+      {"domain_suffix": ["chatgpt.com"], "outbound": "Proxy"},
+      {"rule_set": ["geosite-cn-lite", "obflip-fallback"], "outbound": "DIRECT"},
+      {"rule_set": ["remote-thing"], "outbound": "Proxy"},
+      {"inbound": ["tun-in"], "domain_suffix": ["tun-only.example"], "outbound": "Proxy"}
+    ]
+  }
+}

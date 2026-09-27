@@ -1,0 +1,1 @@
+{"version": 3, "rules": [{"domain_suffix": ["openai.com", "oaistatic.com", "sora-example.ai"], "domain": ["persistent-example.oaistatic.com"], "domain_keyword": ["openai"], "domain_regex": ["^chat\\d\\.example$"]}]}

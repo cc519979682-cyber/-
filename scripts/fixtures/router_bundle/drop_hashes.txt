@@ -1,0 +1,3 @@
+# sha256 of lower-cased outbound server addresses (computed on the router)
+1a22570d6105dfec8a8accc4c2610da9d315c9d1b9ca51416339df82d3a73bd9
+b00a7875685306e931e1ffb3e54b8f38f1f26f9007e8f024bbc497d7a530644c

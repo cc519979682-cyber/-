@@ -14,3 +14,10 @@ PRIVATE*
 *uuid*
 *token*
 *api*
+# NAS router-sync local files (never commit)
+sync.env
+scripts/nas/sync.env
+github_pat
+*.pat
+outbound_map.local.json
+logs/
