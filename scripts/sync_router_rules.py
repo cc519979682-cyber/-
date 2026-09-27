@@ -389,6 +389,7 @@ class Converter:
         report: Report,
         drop_hashes: set[str] | None = None,
         skip_ruleset_ip_direct: bool = True,
+        include_rule_sets: bool = False,
     ) -> None:
         self.outbound_map = outbound_map
         self.resolve_ruleset = resolve_ruleset
@@ -397,6 +398,10 @@ class Converter:
         # IP DIRECT ranges from rule-sets are (almost) all China ranges, already
         # covered by GEOIP,CN,DIRECT; publishing them would add ~10k lines.
         self.skip_ruleset_ip_direct = skip_ruleset_ip_direct
+        # Default: publish only matchers written inline in route.rules (the user's own
+        # rules). rule_set references point at large third-party lists; expanding them
+        # is opt-in (--include-rule-sets / INCLUDE_RULE_SETS=1).
+        self.include_rule_sets = include_rule_sets
 
     # Matchers ------------------------------------------------------------
     def matchers(self, rule: dict, allow_rule_set: bool, depth: int = 0) -> list[tuple[str, str]] | None:
@@ -446,6 +451,12 @@ class Converter:
         if tags and not allow_rule_set:
             counts["skipped_invalid"] += 1
             return None
+        if tags and not self.include_rule_sets:
+            counts["skipped_rule_set_refs"] += len(tags)
+            tags = []
+            if not found:
+                counts["skipped_rule_set_only_rules"] += 1
+                return None
         for tag in tags:
             headless_rules = self.resolve_ruleset(str(tag))
             if headless_rules is None:
@@ -559,6 +570,9 @@ class Converter:
 
         entries: list[tuple[str, str, str]] = []
         seen: set[tuple[str, str]] = set()
+        # Always report these two, so a dry run shows e.g. expanded_rule_set_refs=0.
+        self.report.counts["expanded_rule_set_refs"] += 0
+        self.report.counts["skipped_rule_set_refs"] += 0
         for rule in as_list(route.get("rules")):
             self.report.counts["route_rules_total"] += 1
             if not isinstance(rule, dict):
@@ -687,13 +701,19 @@ def sync_text(
     allow_large_deletion: bool = False,
     max_lines: int = DEFAULT_MAX_LINES,
     skip_ruleset_ip_direct: bool = True,
+    include_rule_sets: bool = False,
 ) -> str:
     """Return the new rules.conf text (may equal the input). Raises SyncError."""
 
     before, old_block, after = sr.split_router_sync_block(rules_text)
     outside = [*before, *after]
     entries = Converter(
-        outbound_map, resolve_ruleset, report, drop_hashes, skip_ruleset_ip_direct=skip_ruleset_ip_direct
+        outbound_map,
+        resolve_ruleset,
+        report,
+        drop_hashes,
+        skip_ruleset_ip_direct=skip_ruleset_ip_direct,
+        include_rule_sets=include_rule_sets,
     ).convert(route)
     if report.missing_rulesets and not allow_missing_rulesets:
         raise MissingRuleSetError(
@@ -738,6 +758,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-large-deletion", action="store_true")
     parser.add_argument("--max-lines", type=int, default=DEFAULT_MAX_LINES)
     parser.add_argument(
+        "--include-rule-sets",
+        action="store_true",
+        help="Also expand rule_set references (third-party lists). Default: only inline route.rules matchers",
+    )
+    parser.add_argument(
         "--include-ruleset-ip-direct",
         action="store_true",
         help="Also publish IP-CIDR DIRECT rules expanded from rule-sets (default: skipped, GEOIP,CN covers them)",
@@ -766,6 +791,7 @@ def main(argv: list[str] | None = None) -> int:
             allow_large_deletion=args.allow_large_deletion,
             max_lines=args.max_lines,
             skip_ruleset_ip_direct=not args.include_ruleset_ip_direct,
+            include_rule_sets=args.include_rule_sets,
         )
     except GuardError as exc:
         print("\n".join(report.lines()), file=sys.stderr)

@@ -87,7 +87,8 @@ https://raw.githubusercontent.com/cc519979682-cyber/-/main/v2rayn_personal_routi
 
 - 两行标记之外的手写规则不会被改动，并且优先于路由器同步的规则。
 - 节点、密码、UUID、订阅、按设备的规则、住宅出口规则、内网地址都不会被同步出来。
-- 单个主机 IP（IPv4 /29 及更小、IPv6 /120 及更小）不会被同步；规则集里的直连 IP 段默认不同步（已由 `GEOIP,CN,DIRECT` 覆盖）。
+- 默认只同步路由器里直接手写的规则；引用的第三方规则集（rule_set）默认不展开（可用 `INCLUDE_RULE_SETS=1` 打开）。
+- 单个主机 IP（IPv4 /29 及更小、IPv6 /120 及更小）不会被同步；展开规则集时，其中的直连 IP 段默认也不同步（已由 `GEOIP,CN,DIRECT` 覆盖）。
 - 一次少掉 10% 以上的规则会自动停止，避免路由器出错时把规则清空。
 
 设置方法见 [`scripts/nas/README.md`](scripts/nas/README.md)。
