@@ -49,10 +49,12 @@ trap 'exit 1' INT TERM HUP
 [ -r "$ENV_FILE" ] || fail "missing $ENV_FILE (copy sync.env.example)"
 # shellcheck disable=SC1090
 . "$ENV_FILE"
+# ROUTER_HOST may be an ssh alias from ~/.ssh/config (e.g. openbox-router); then leave
+# ROUTER_USER / ROUTER_PORT / ROUTER_SSH_KEY empty and ssh uses the alias settings.
 : "${ROUTER_HOST:?set ROUTER_HOST in sync.env}"
-ROUTER_PORT="${ROUTER_PORT:-22}"
-ROUTER_USER="${ROUTER_USER:-root}"
-ROUTER_SSH_KEY="${ROUTER_SSH_KEY:-$HOME/.ssh/router_sync_ed25519}"
+ROUTER_PORT="${ROUTER_PORT:-}"
+ROUTER_USER="${ROUTER_USER:-}"
+ROUTER_SSH_KEY="${ROUTER_SSH_KEY:-}"
 ROUTER_CONFIG="${ROUTER_CONFIG:-/opt/open-box/etc/config.json}"
 ROUTER_SINGBOX="${ROUTER_SINGBOX:-}"
 GITHUB_REPO="${GITHUB_REPO:-cc519979682-cyber/-}"
@@ -63,8 +65,20 @@ CODE_URL="${CODE_URL:-https://codeload.github.com/$GITHUB_REPO/tar.gz/refs/heads
 case "$ROUTER_CONFIG$ROUTER_SINGBOX" in
   *[!A-Za-z0-9._/-]*) fail "ROUTER_CONFIG / ROUTER_SINGBOX may only contain A-Z a-z 0-9 . _ / -" ;;
 esac
-[ -r "$ROUTER_SSH_KEY" ] || fail "SSH key $ROUTER_SSH_KEY not found"
-[ -r "$GITHUB_TOKEN_FILE" ] || fail "token file $GITHUB_TOKEN_FILE not found"
+case "$ROUTER_HOST$ROUTER_USER$ROUTER_PORT" in
+  *[!A-Za-z0-9._:@-]*) fail "ROUTER_HOST / ROUTER_USER / ROUTER_PORT contain unexpected characters" ;;
+esac
+if [ -n "$ROUTER_SSH_KEY" ] && [ ! -r "$ROUTER_SSH_KEY" ]; then
+  fail "SSH key $ROUTER_SSH_KEY not found"
+fi
+USE_TOKEN=1
+if [ ! -r "$GITHUB_TOKEN_FILE" ]; then
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    USE_TOKEN=0   # dry run reads the public repo anonymously; nothing is pushed
+  else
+    fail "token file $GITHUB_TOKEN_FILE not found"
+  fi
+fi
 
 log "start"
 
@@ -81,14 +95,19 @@ fi
 
 # ---- router export (read-only; only route + decompiled rule-sets + address hashes leave the router)
 mkdir -p "$WORK/bundle"
-if ! ssh -i "$ROUTER_SSH_KEY" -p "$ROUTER_PORT" \
-    -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes \
-    "$ROUTER_USER@$ROUTER_HOST" "sh -s -- '$ROUTER_CONFIG' '$ROUTER_SINGBOX'" \
+set -- -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes
+[ -n "$ROUTER_SSH_KEY" ] && set -- "$@" -i "$ROUTER_SSH_KEY"
+[ -n "$ROUTER_PORT" ] && set -- "$@" -p "$ROUTER_PORT"
+[ -n "$ROUTER_USER" ] && set -- "$@" -l "$ROUTER_USER"
+if ! ssh "$@" "$ROUTER_HOST" "sh -s -- '$ROUTER_CONFIG' '$ROUTER_SINGBOX'" \
     < "$SRC/scripts/nas/router_export.sh" > "$WORK/bundle.tar"; then
   fail "router export over SSH failed"
 fi
 tar -xf "$WORK/bundle.tar" -C "$WORK/bundle" || fail "bad bundle from router"
 [ -s "$WORK/bundle/route.json" ] || fail "router returned no route.json"
+# Canonical compact JSON, so the jq and ucode export paths give byte-identical bundles.
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p,encoding="utf-8")); open(p,"w",encoding="utf-8").write(json.dumps(d,ensure_ascii=False,separators=(",",":"))+"\n")' \
+  "$WORK/bundle/route.json" || fail "router returned invalid route.json"
 log "bundle: $(ls "$WORK/bundle/rulesets" | wc -l) rule-set files"
 
 # ---- self-test of the downloaded code
@@ -96,7 +115,8 @@ python3 -m unittest discover -s "$SRC/scripts" -p 'test_*.py' > "$WORK/unittest.
   cat "$WORK/unittest.log"; fail "unit tests failed"; }
 
 # ---- convert + push via GitHub API (only when personal/rules.conf changes)
-set -- --bundle "$WORK/bundle" --repo "$GITHUB_REPO" --branch "$GITHUB_BRANCH" --token-file "$GITHUB_TOKEN_FILE"
+set -- --bundle "$WORK/bundle" --repo "$GITHUB_REPO" --branch "$GITHUB_BRANCH"
+[ "$USE_TOKEN" = "1" ] && set -- "$@" --token-file "$GITHUB_TOKEN_FILE"
 [ -n "${GITHUB_API:-}" ] && set -- "$@" --api "$GITHUB_API"
 [ -n "${OUTBOUND_MAP_OVERRIDE:-}" ] && set -- "$@" --outbound-map-override "$OUTBOUND_MAP_OVERRIDE"
 [ "${STRICT:-0}" = "1" ] && set -- "$@" --strict

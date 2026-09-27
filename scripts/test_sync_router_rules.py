@@ -424,6 +424,15 @@ class GitHubSyncTests(unittest.TestCase):
             client = github_sync.GitHubClient("o/r", "main", "personal/rules.conf", token)
             self.assertNotIn(token, repr(client))
 
+    def test_tokenless_client_never_writes(self):
+        client = github_sync.GitHubClient("o/r", "main", "personal/rules.conf", "")
+        with self.assertRaises(github_sync.GitHubError):
+            client.put_file("x", "sha", "msg")
+
+    def test_token_required_unless_dry_run(self):
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            github_sync.main(["--bundle", str(FIXTURE)])
+
 
 if __name__ == "__main__":
     unittest.main()
