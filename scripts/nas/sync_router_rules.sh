@@ -123,11 +123,12 @@ set -- --bundle "$WORK/bundle" --repo "$GITHUB_REPO" --branch "$GITHUB_BRANCH"
 [ "${DRY_RUN:-0}" = "1" ] && set -- "$@" --dry-run
 [ "${ALLOW_LARGE_DELETION:-0}" = "1" ] && set -- "$@" --allow-large-deletion
 [ "${INCLUDE_RULE_SETS:-0}" = "1" ] && set -- "$@" --include-rule-sets
+[ "${HAND_RULES_WIN:-0}" = "1" ] && set -- "$@" --hand-rules-win
 [ "${INCLUDE_RULESET_IP_DIRECT:-0}" = "1" ] && set -- "$@" --include-ruleset-ip-direct
 if python3 "$SRC/scripts/nas/github_sync.py" "$@"; then
   log "done"
 else
   rc=$?
-  [ "$rc" = "2" ] && fail "deletion guard tripped (router rules shrank >10%); nothing pushed, see above"
+  [ "$rc" = "2" ] && fail "safety guard tripped (router returned no/too few rules, or >10% of the block would be deleted); nothing pushed, see above"
   fail "converter/push exited with $rc"
 fi
