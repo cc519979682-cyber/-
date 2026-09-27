@@ -1,0 +1,111 @@
+#!/bin/sh
+# Hourly NAS job: read router route rules (read-only, over SSH), convert them into
+# public-safe rules and update personal/rules.conf on GitHub only when it changed.
+# No git needed on the NAS. See scripts/nas/README.md.
+set -eu
+
+BASE_DIR="${ROUTER_SYNC_HOME:-$HOME/router-sync}"
+ENV_FILE="${SYNC_ENV:-$BASE_DIR/sync.env}"
+LOG_DIR="$BASE_DIR/logs"
+LOG_FILE="$LOG_DIR/sync.log"
+LOCK_DIR="$BASE_DIR/run.lock"
+PAUSE_FILE="$BASE_DIR/PAUSE"
+
+mkdir -p "$LOG_DIR"
+umask 077
+if [ -f "$LOG_FILE" ] && [ "$(wc -c < "$LOG_FILE")" -gt 1048576 ]; then
+  mv -f "$LOG_FILE" "$LOG_FILE.1"
+fi
+if [ "${SYNC_LOG_STDOUT:-0}" != "1" ]; then
+  exec >>"$LOG_FILE" 2>&1
+fi
+
+log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
+fail() { log "FAILED: $*"; exit 1; }
+
+if [ -e "$PAUSE_FILE" ]; then
+  log "paused ($PAUSE_FILE exists), skipping"
+  exit 0
+fi
+
+# ---- lock (mkdir is atomic); clear a stale lock left by a dead process
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  old_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
+  if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+    log "another run (pid $old_pid) is still active, skipping"
+    exit 0
+  fi
+  log "removing stale lock"
+  rm -rf "$LOCK_DIR"
+  mkdir "$LOCK_DIR" || fail "cannot take lock $LOCK_DIR"
+fi
+echo $$ > "$LOCK_DIR/pid"
+WORK=$(mktemp -d "$BASE_DIR/work.XXXXXX")
+cleanup() { rm -rf "$WORK" "$LOCK_DIR"; }
+trap cleanup EXIT
+trap 'exit 1' INT TERM HUP
+
+# ---- config
+[ -r "$ENV_FILE" ] || fail "missing $ENV_FILE (copy sync.env.example)"
+# shellcheck disable=SC1090
+. "$ENV_FILE"
+: "${ROUTER_HOST:?set ROUTER_HOST in sync.env}"
+ROUTER_PORT="${ROUTER_PORT:-22}"
+ROUTER_USER="${ROUTER_USER:-root}"
+ROUTER_SSH_KEY="${ROUTER_SSH_KEY:-$HOME/.ssh/router_sync_ed25519}"
+ROUTER_CONFIG="${ROUTER_CONFIG:-/opt/open-box/etc/config.json}"
+ROUTER_SINGBOX="${ROUTER_SINGBOX:-}"
+GITHUB_REPO="${GITHUB_REPO:-cc519979682-cyber/-}"
+GITHUB_BRANCH="${GITHUB_BRANCH:-main}"
+GITHUB_TOKEN_FILE="${GITHUB_TOKEN_FILE:-$HOME/.config/router-sync/github_pat}"
+CODE_URL="${CODE_URL:-https://codeload.github.com/$GITHUB_REPO/tar.gz/refs/heads/$GITHUB_BRANCH}"
+
+case "$ROUTER_CONFIG$ROUTER_SINGBOX" in
+  *[!A-Za-z0-9._/-]*) fail "ROUTER_CONFIG / ROUTER_SINGBOX may only contain A-Z a-z 0-9 . _ / -" ;;
+esac
+[ -r "$ROUTER_SSH_KEY" ] || fail "SSH key $ROUTER_SSH_KEY not found"
+[ -r "$GITHUB_TOKEN_FILE" ] || fail "token file $GITHUB_TOKEN_FILE not found"
+
+log "start"
+
+# ---- converter code: fresh copy of main each run (or a fixed local copy)
+if [ -n "${CODE_DIR:-}" ]; then
+  SRC="$CODE_DIR"
+else
+  SRC="$WORK/src"
+  mkdir -p "$SRC"
+  curl -fsSL --retry 3 --max-time 120 "$CODE_URL" -o "$WORK/src.tgz" || fail "download of converter code failed"
+  tar -xzf "$WORK/src.tgz" -C "$SRC" --strip-components=1 || fail "cannot unpack converter code"
+fi
+[ -f "$SRC/scripts/sync_router_rules.py" ] || fail "converter missing in $SRC"
+
+# ---- router export (read-only; only route + decompiled rule-sets + address hashes leave the router)
+mkdir -p "$WORK/bundle"
+if ! ssh -i "$ROUTER_SSH_KEY" -p "$ROUTER_PORT" \
+    -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=yes \
+    "$ROUTER_USER@$ROUTER_HOST" "sh -s -- '$ROUTER_CONFIG' '$ROUTER_SINGBOX'" \
+    < "$SRC/scripts/nas/router_export.sh" > "$WORK/bundle.tar"; then
+  fail "router export over SSH failed"
+fi
+tar -xf "$WORK/bundle.tar" -C "$WORK/bundle" || fail "bad bundle from router"
+[ -s "$WORK/bundle/route.json" ] || fail "router returned no route.json"
+log "bundle: $(ls "$WORK/bundle/rulesets" | wc -l) rule-set files"
+
+# ---- self-test of the downloaded code
+python3 -m unittest discover -s "$SRC/scripts" -p 'test_*.py' > "$WORK/unittest.log" 2>&1 || {
+  cat "$WORK/unittest.log"; fail "unit tests failed"; }
+
+# ---- convert + push via GitHub API (only when personal/rules.conf changes)
+set -- --bundle "$WORK/bundle" --repo "$GITHUB_REPO" --branch "$GITHUB_BRANCH" --token-file "$GITHUB_TOKEN_FILE"
+[ -n "${GITHUB_API:-}" ] && set -- "$@" --api "$GITHUB_API"
+[ -n "${OUTBOUND_MAP_OVERRIDE:-}" ] && set -- "$@" --outbound-map-override "$OUTBOUND_MAP_OVERRIDE"
+[ "${STRICT:-0}" = "1" ] && set -- "$@" --strict
+[ "${DRY_RUN:-0}" = "1" ] && set -- "$@" --dry-run
+[ "${ALLOW_LARGE_DELETION:-0}" = "1" ] && set -- "$@" --allow-large-deletion
+if python3 "$SRC/scripts/nas/github_sync.py" "$@"; then
+  log "done"
+else
+  rc=$?
+  [ "$rc" = "2" ] && fail "deletion guard tripped (router rules shrank >10%); nothing pushed, see above"
+  fail "converter/push exited with $rc"
+fi

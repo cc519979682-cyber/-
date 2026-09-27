@@ -1,0 +1,1 @@
+{"version": 3, "rules": [{"domain_suffix": ["example.cn", "qq.com"]}, {"source_ip_cidr": ["192.168.50.9/32"], "domain_suffix": ["device.example"]}, {"domain_suffix": ["not-this.example"], "invert": true}, {"ip_cidr": ["114.114.114.0/24", "192.168.0.0/16"]}]}

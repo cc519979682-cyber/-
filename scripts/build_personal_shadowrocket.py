@@ -116,6 +116,8 @@ RULE_TYPES = {
     "RULE-SET",
 }
 STRIPPED_SECTIONS = {"[url rewrite]", "[mitm]"}
+ROUTER_SYNC_BEGIN = "// BEGIN router-sync (auto-generated, do not edit by hand)"
+ROUTER_SYNC_END = "// END router-sync"
 
 
 def read_text(path: Path) -> str:
@@ -292,6 +294,57 @@ def sanitize_rules(source_text: str, drop_ips: set[str] | None = None) -> list[s
             continue
         rules[key] = rule
     return list(rules.values())
+
+
+def split_router_sync_block(text: str) -> tuple[list[str], list[str] | None, list[str]]:
+    """Split rules.conf into (before, block_lines, after) around the router-sync markers.
+
+    block_lines is None when the markers are absent. Raises ValueError on
+    malformed markers (duplicated, unbalanced or out of order) so callers never
+    guess where hand-kept lines end.
+    """
+
+    lines = text.splitlines()
+    begins = [i for i, line in enumerate(lines) if line.strip() == ROUTER_SYNC_BEGIN]
+    ends = [i for i, line in enumerate(lines) if line.strip() == ROUTER_SYNC_END]
+    if not begins and not ends:
+        return lines, None, []
+    if len(begins) != 1 or len(ends) != 1 or begins[0] > ends[0]:
+        raise ValueError("personal/rules.conf has malformed router-sync markers")
+    begin, end = begins[0], ends[0]
+    return lines[:begin], lines[begin + 1 : end], lines[end + 1 :]
+
+
+def default_router_sync_insert_index(lines: list[str]) -> int:
+    """Where to place a missing router-sync block: just before the trailing
+    GEOIP/FINAL catch-all lines, so every hand-kept rule (AI priority rules,
+    home access exceptions, leak tests, Futu, ads, domestic direct) keeps
+    first-match precedence over router-derived rules."""
+
+    index = len(lines)
+    while index > 0:
+        stripped = lines[index - 1].strip()
+        upper = stripped.upper()
+        if not stripped or upper.startswith(("GEOIP,", "FINAL,", "MATCH,")):
+            index -= 1
+            continue
+        break
+    return index
+
+
+def replace_router_sync_block(text: str, block_lines: list[str]) -> str:
+    """Return text with the router-sync block set to block_lines.
+
+    Lines outside the markers are preserved byte-for-byte (apart from the
+    file's trailing newline normalisation)."""
+
+    before, old_block, after = split_router_sync_block(text)
+    if old_block is None:
+        index = default_router_sync_insert_index(before)
+        after = before[index:]
+        before = before[:index]
+    result = [*before, ROUTER_SYNC_BEGIN, *block_lines, ROUTER_SYNC_END, *after]
+    return "\n".join(result) + "\n"
 
 
 def fetch_upstream(url: str) -> str:
@@ -556,6 +609,32 @@ def validate_output(text: str) -> None:
     assert_public_safe(text)
 
 
+def previous_personal_text(path: Path) -> str:
+    return read_text(path) if path.exists() else ""
+
+
+def refreshed_personal_text(rules: list[str], previous_text: str) -> str:
+    """Rewrite rules.conf from --refresh-from output without losing the
+    router-sync block (markers and contents) maintained by the NAS job."""
+
+    _, old_block, _ = split_router_sync_block(previous_text)
+    text = "\n".join(rules) + "\n"
+    if old_block is None:
+        return text
+    hand_keys = set()
+    for rule in rules:
+        parsed = parse_rule(rule, set())
+        if parsed is not None:
+            hand_keys.add(parsed[0])
+    kept_block = []
+    for line in old_block:
+        parsed = parse_rule(line, set())
+        if parsed is not None and parsed[0] in hand_keys:
+            continue
+        kept_block.append(line)
+    return replace_router_sync_block(text, kept_block)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--personal", default="personal/rules.conf", help="Public-safe source rules")
@@ -579,7 +658,8 @@ def main() -> int:
         source = read_text(Path(args.refresh_from))
         rules = sanitize_rules(source, drop_ips)
         assert_public_safe("\n".join(rules))
-        write_text(personal_path, "\n".join(rules) + "\n")
+        write_text(personal_path, refreshed_personal_text(rules, previous_personal_text(personal_path)))
+        rules = sanitize_rules(read_text(personal_path))
     else:
         rules = sanitize_rules(read_text(personal_path))
 

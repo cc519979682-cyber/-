@@ -79,6 +79,18 @@ https://raw.githubusercontent.com/cc519979682-cyber/-/main/v2rayn_personal_routi
 
 所以平时你只需要订阅最终链接，不需要每天手动下载。
 
+### 路由器规则自动同步
+
+家里 NAS 每小时会从路由器（OpenBox / sing-box）只读取出分流规则，转换成公开安全的规则，
+写进 `personal/rules.conf` 里 `// BEGIN router-sync` 和 `// END router-sync` 两行之间，
+只有真的有变化才提交（`Sync router rules (auto)`），然后上面的流程自动重新生成配置。
+
+- 两行标记之外的手写规则不会被改动，并且优先于路由器同步的规则。
+- 节点、密码、UUID、订阅、按设备的规则、住宅出口规则、内网地址都不会被同步出来。
+- 一次少掉 10% 以上的规则会自动停止，避免路由器出错时把规则清空。
+
+设置方法见 [`scripts/nas/README.md`](scripts/nas/README.md)。
+
 ## 安全边界
 
 这个仓库只适合放“公开也没关系”的规则，例如：

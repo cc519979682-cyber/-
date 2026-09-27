@@ -1,0 +1,68 @@
+{
+  "_comment": [
+    "OpenBox / sing-box outbound tag -> public policy. Tag names only, never node details.",
+    "Put each tag under exactly one of DIRECT, PROXY, REJECT, DROP.",
+    "DROP = never publish rules that use this outbound (e.g. residential / chain exits).",
+    "Tags that appear nowhere here are 'unknown': their rules are skipped and reported",
+    "(or fail with --strict). Real node tags are intentionally NOT listed.",
+    "A NAS-local override file with the same layout can be passed via --outbound-map-override."
+  ],
+  "DIRECT": [
+    "DIRECT",
+    "direct",
+    "dnsmasq",
+    "Domestic"
+  ],
+  "REJECT": [
+    "REJECT",
+    "block",
+    "reject"
+  ],
+  "DROP": [
+    "Webshare-US-Residential",
+    "AI-Residential"
+  ],
+  "PROXY": [
+    "Proxy",
+    "OpenAI",
+    "AppleAI",
+    "YouTube",
+    "TikTok-Stable",
+    "Javday-Video",
+    "Netflix",
+    "Disney",
+    "Telegram",
+    "Spotify",
+    "PayPal",
+    "uSMART-HK",
+    "Crypto",
+    "Discord",
+    "Google FCM",
+    "Microsoft",
+    "Apple",
+    "Steam",
+    "miHoYo",
+    "Scholar",
+    "Speedtest",
+    "Others",
+    "Global TV",
+    "Apple TV",
+    "Asian TV",
+    "Stable-Daily",
+    "AI-Stable",
+    "Media-Stable",
+    "Manual",
+    "Fallback",
+    "迁移兜底",
+    "Media-Auto",
+    "AI-Auto",
+    "AUTO-Daily",
+    "AUTO-Asia",
+    "AUTO-HK",
+    "AUTO-JP",
+    "AUTO-SG",
+    "AUTO-TW",
+    "AUTO-US",
+    "Auto - UrlTest"
+  ]
+}
