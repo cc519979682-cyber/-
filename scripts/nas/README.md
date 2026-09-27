@@ -63,11 +63,16 @@ NAS 上**不需要 git**（装了也不用），只用到自带的 `python3`、`
 
 ```sh
 mkdir -p ~/router-sync
-curl -fsSL https://raw.githubusercontent.com/cc519979682-cyber/-/main/scripts/nas/sync_router_rules.sh -o ~/router-sync/sync_router_rules.sh
-curl -fsSL https://raw.githubusercontent.com/cc519979682-cyber/-/main/scripts/nas/sync.env.example -o ~/router-sync/sync.env
+curl -fsSL --retry 3 --retry-all-errors --retry-delay 30 -H 'Accept: application/vnd.github.raw' \
+  'https://api.github.com/repos/cc519979682-cyber/-/contents/scripts/nas/sync_router_rules.sh?ref=main' -o ~/router-sync/sync_router_rules.sh
+curl -fsSL --retry 3 --retry-all-errors --retry-delay 30 -H 'Accept: application/vnd.github.raw' \
+  'https://api.github.com/repos/cc519979682-cyber/-/contents/scripts/nas/sync.env.example?ref=main' -o ~/router-sync/sync.env
 chmod 700 ~/router-sync/sync_router_rules.sh
 chmod 600 ~/router-sync/sync.env
 ```
+
+（这里走 `api.github.com`，不走 `raw.githubusercontent.com`，后者从 NAS 访问时经常被重置连接。
+如果 NAS 上的 curl 太旧、报 `--retry-all-errors` 不认识，把这个参数删掉即可；失败了就再执行一次。）
 
 之后每次运行，脚本会自动从 GitHub 下载最新的转换程序，不用手动更新
 （如果想固定版本，可以在 `sync.env` 里设置 `CODE_DIR` 指向一份本地拷贝）。
@@ -147,7 +152,7 @@ DRY_RUN=1 SYNC_LOG_STDOUT=1 sh ~/router-sync/sync_router_rules.sh
   `DOMAIN-SUFFIX,ads.youtube.com,REJECT` 前面。看到这类提示，可以把那条保留区规则也加到路由器里，或者从仓库删掉。
 
 最后一行是 `result=dry-run`
-（没有变化时是 `result=unchanged`）。试跑只从公开地址读取 `personal/rules.conf`，**不需要 GitHub 令牌、也不会上传**；
+（没有变化时是 `result=unchanged`）。试跑通过 `api.github.com` 匿名读取公开的 `personal/rules.conf`，**不需要 GitHub 令牌、也不会上传**；
 正式运行（去掉 `DRY_RUN=1`）才需要第 2 步的令牌。
 
 ### 5. 设置每天自动运行
@@ -177,6 +182,9 @@ crontab -e
   - `FAILED: safety guard tripped`：路由器没读到规则，或规则一下子少了很多，已停止、没有上传。
     先检查路由器；确认是你有意删减后，手动放行一次：
     `ALLOW_LARGE_DELETION=1 SYNC_LOG_STDOUT=1 sh ~/router-sync/sync_router_rules.sh`。
+- 网络不稳：所有访问 GitHub 的请求（下载程序、读取和上传 `rules.conf`）遇到连接被重置、超时或 GitHub 5xx 时
+  会自动重试，共 3 次、每次间隔 30 秒，日志里会有 `WARNING ... retry` 字样；3 次都失败才算失败。
+  4xx 错误（如令牌无效、权限不足）不会重试。间隔可用 `GITHUB_RETRY_DELAY=秒数` 调整。
 - 暂停：`touch ~/router-sync/PAUSE`；恢复：`rm ~/router-sync/PAUSE`。
 - 彻底停用：`crontab -e` 删掉那一行。
 - 同一时间只会有一个在跑（`~/router-sync/run.lock`），上一次没跑完时这次会自动跳过。
