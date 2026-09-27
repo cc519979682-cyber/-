@@ -176,10 +176,11 @@ class HostIpTests(unittest.TestCase):
         self.assertNotIn("5.6.7.8", text)
 
     def test_hand_kept_host_ips_outside_block_untouched(self):
-        route = {"rules": [{"ip_cidr": ["8.149.128.52/32"], "outbound": "direct"}]}
+        route = {"rules": [{"ip_cidr": ["8.149.128.52/32"], "domain": ["x.example"], "outbound": "direct"}]}
         text, _ = run_sync(HAND_KEPT, route=route)
+        # the router's copy is filtered as a host IP, so the hand-kept line is not moved
         self.assertIn("IP-CIDR,8.149.128.52/32,DIRECT", outside_of(text))
-        self.assertEqual(block_of(text), [])
+        self.assertEqual(block_of(text), ["DOMAIN,x.example,DIRECT"])
 
 
 class RuleSetIpDirectTests(unittest.TestCase):
@@ -250,7 +251,9 @@ class InlineOnlyDefaultTests(unittest.TestCase):
             "IP-CIDR6,2001:4860::/32,PROXY,no-resolve",
             "DOMAIN-SUFFIX,or-one.example,PROXY,force-remote-dns",
             "DOMAIN,or-two.example,PROXY,force-remote-dns",
+            "DOMAIN-SUFFIX,chatgpt.com,PROXY,force-remote-dns",  # moved from hand-kept (router wins)
         ])
+        self.assertNotIn("DOMAIN-SUFFIX,chatgpt.com,PROXY,force-remote-dns", outside_of(self.text))
 
     def test_rule_set_contents_not_published(self):
         joined = "\n".join(self.block)
@@ -301,6 +304,166 @@ class InlineOnlyDefaultTests(unittest.TestCase):
                     self.assertEqual(srr.main(base + extra), 0)
                 self.assertEqual("sora-example.ai" in rules.read_text(encoding="utf-8"), expect)
                 self.assertIn("expanded_rule_set_refs=0" if not expect else "expanded_rule_set_refs=4", err.getvalue())
+
+
+class RouterWinsTests(unittest.TestCase):
+    HAND = """// AI priority
+DOMAIN-SUFFIX,chatgpt.com,PROXY,force-remote-dns
+DOMAIN-SUFFIX,bing.com,DIRECT
+
+// Home NAS must stay DIRECT
+DOMAIN-SUFFIX,chenxuning.cc,DIRECT
+DOMAIN-SUFFIX,browserleaks.com,PROXY,force-remote-dns
+DOMAIN-KEYWORD,OKX,DIRECT
+DOMAIN-SUFFIX,Futunn.com,PROXY,force-remote-dns
+IP-CIDR,8.8.8.0/24,DIRECT
+// BEGIN router-sync (auto-generated, do not edit by hand)
+// END router-sync
+DOMAIN-SUFFIX,after-block.example,DIRECT
+GEOIP,CN,DIRECT
+"""
+    ROUTE = {"rules": [
+        {"action": "sniff"},
+        {"domain_suffix": ["chatgpt.com", "muse.ai"], "outbound": "OpenAI"},
+        {"domain_suffix": ["bing.com"], "outbound": "Proxy"},  # policy differs -> router wins
+        {"domain_suffix": ["futunn.com"], "outbound": "Proxy"},  # case-insensitive match
+        {"domain": ["www.okx.com"], "outbound": "Proxy"},  # shadowed by hand-kept keyword okx
+        {"ip_cidr": ["8.8.8.0/24"], "outbound": "Proxy"},
+        {"domain_suffix": ["after-block.example"], "outbound": "direct"},
+    ]}
+
+    def sync(self, text=None, **kwargs):
+        return run_sync(text or self.HAND, route=kwargs.pop("route", self.ROUTE), **kwargs)
+
+    def test_router_rules_move_into_block_with_router_policy(self):
+        text, report = self.sync()
+        self.assertEqual(block_of(text), [
+            "DOMAIN-SUFFIX,chatgpt.com,PROXY,force-remote-dns",
+            "DOMAIN-SUFFIX,muse.ai,PROXY,force-remote-dns",
+            "DOMAIN-SUFFIX,bing.com,PROXY,force-remote-dns",
+            "DOMAIN-SUFFIX,futunn.com,PROXY,force-remote-dns",
+            "DOMAIN,www.okx.com,PROXY,force-remote-dns",
+            "IP-CIDR,8.8.8.0/24,PROXY,no-resolve",
+            "DOMAIN-SUFFIX,after-block.example,DIRECT",
+        ])
+        # remaining hand-kept: comments, blank line, order and GEOIP untouched
+        self.assertEqual(outside_of(text), [
+            "// AI priority",
+            "",
+            "// Home NAS must stay DIRECT",
+            "DOMAIN-SUFFIX,chenxuning.cc,DIRECT",
+            "DOMAIN-SUFFIX,browserleaks.com,PROXY,force-remote-dns",
+            "DOMAIN-KEYWORD,OKX,DIRECT",
+            "GEOIP,CN,DIRECT",
+        ])
+        counts = report.counts
+        self.assertEqual(counts["removed_from_hand_kept"], 5)
+        self.assertEqual(counts["policy_changed"], 2)
+        self.assertEqual(counts["hand_kept_remaining"], 4)
+        self.assertEqual(counts["hand_kept_DIRECT"], 3)
+        self.assertEqual(counts["hand_kept_PROXY"], 1)
+        self.assertEqual(counts["block_rules"], 7)
+        self.assertEqual(counts["deduped_hand_kept"], 0)
+
+    def test_no_duplicates_between_hand_kept_and_block(self):
+        text, _ = self.sync()
+        hand_keys = {srr.line_key(line) for line in outside_of(text)} - {None}
+        block_keys = {srr.line_key(line) for line in block_of(text)}
+        self.assertEqual(hand_keys & block_keys, set())
+
+    def test_report_lists_changes_and_remaining(self):
+        _, report = self.sync()
+        rendered = "\n".join(report.lines())
+        for needle in (
+            "removed_from_hand_kept=5",
+            "policy_changed=2",
+            "hand_kept_remaining=4",
+            "block_rules=7",
+            "POLICY CHANGED DOMAIN-SUFFIX,bing.com: DIRECT -> PROXY (router wins)",
+            "POLICY CHANGED IP-CIDR,8.8.8.0/24: DIRECT -> PROXY (router wins)",
+            "HAND-KEPT rules remaining (4), in file order:",
+            "  DOMAIN-SUFFIX,chenxuning.cc,DIRECT",
+            "  GEOIP,CN,DIRECT",
+        ):
+            self.assertIn(needle, rendered)
+
+    def test_shadowing_hand_rule_above_block_reported(self):
+        _, report = self.sync()
+        self.assertEqual(report.counts["shadowed_by_hand_kept"], 1)
+        self.assertIn("SHADOWED router DOMAIN,www.okx.com,PROXY", "\n".join(report.lines()))
+
+    def test_idempotent(self):
+        once, _ = self.sync()
+        twice, report = self.sync(once)
+        self.assertIs(twice, once)
+        self.assertEqual(report.counts["removed_from_hand_kept"], 0)
+
+    def test_zero_publishable_rules_aborts(self):
+        route = {"rules": [{"ip_cidr": ["1.2.3.4/32"], "outbound": "direct"}, {"action": "sniff"}]}
+        with self.assertRaises(srr.GuardError):
+            self.sync(route=route)
+
+    def test_less_than_half_of_previous_block_aborts(self):
+        once, _ = self.sync()
+        small = {"rules": [{"domain_suffix": ["chatgpt.com", "muse.ai", "bing.com"], "outbound": "Proxy"}]}
+        with self.assertRaises(srr.GuardError):
+            self.sync(once, route=small)  # 3 < 50% of 7
+        text, _ = self.sync(once, route=small, allow_large_deletion=True)
+        self.assertEqual(len(block_of(text)), 3)
+
+    def test_hand_rules_win_restores_old_mode(self):
+        text, report = self.sync(hand_rules_win=True)
+        self.assertEqual(outside_of(text), self.HAND.splitlines()[:10] + self.HAND.splitlines()[12:])
+        self.assertEqual(block_of(text), [
+            "DOMAIN-SUFFIX,muse.ai,PROXY,force-remote-dns",
+            "DOMAIN,www.okx.com,PROXY,force-remote-dns",
+        ])
+        self.assertEqual(report.counts["deduped_hand_kept"], 5)
+        self.assertEqual(report.counts["removed_from_hand_kept"], 0)
+
+    def test_leak_test_rule_moves_only_if_router_has_it(self):
+        route = {"rules": [{"domain_suffix": ["browserleaks.com", "x.example"], "outbound": "Proxy"}]}
+        text, _ = self.sync(route=route)
+        self.assertNotIn("DOMAIN-SUFFIX,browserleaks.com,PROXY,force-remote-dns", outside_of(text))
+        self.assertIn("DOMAIN-SUFFIX,browserleaks.com,PROXY,force-remote-dns", block_of(text))
+        text, _ = self.sync()
+        self.assertIn("DOMAIN-SUFFIX,browserleaks.com,PROXY,force-remote-dns", outside_of(text))
+
+    def test_missing_markers_inserted_before_geoip(self):
+        hand = self.HAND.replace(sr.ROUTER_SYNC_BEGIN + "\n", "").replace(sr.ROUTER_SYNC_END + "\n", "")
+        text, _ = self.sync(hand)
+        lines = text.splitlines()
+        self.assertEqual(lines[-1], "GEOIP,CN,DIRECT")
+        self.assertEqual(lines[-2], sr.ROUTER_SYNC_END)
+        self.assertNotIn("DOMAIN-SUFFIX,after-block.example,DIRECT", outside_of(text))
+
+    def test_cli_flags(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rules = Path(tmp) / "rules.conf"
+            route = Path(tmp) / "route.json"
+            route.write_text(json.dumps({"route": self.ROUTE}), encoding="utf-8")
+            for extra, expect_moved in (([], True), (["--hand-rules-win"], False)):
+                rules.write_text(self.HAND, encoding="utf-8")
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertEqual(srr.main([str(route), "--rules", str(rules)] + extra), 0)
+                hand = outside_of(rules.read_text(encoding="utf-8"))
+                self.assertEqual("DOMAIN-SUFFIX,bing.com,DIRECT" not in hand, expect_moved)
+            with tempfile.TemporaryDirectory():
+                rules.write_text(self.HAND, encoding="utf-8")
+                route.write_text(json.dumps({"route": {"rules": [{"action": "sniff"}]}}), encoding="utf-8")
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(srr.main([str(route), "--rules", str(rules)]), 2)
+                self.assertEqual(rules.read_text(encoding="utf-8"), self.HAND)
+
+    def test_github_sync_pushes_whole_file_with_changed_hand_kept(self):
+        convert = lambda text: self.sync(text)[0]  # noqa: E731
+        client = FakeClient([self.HAND])
+        self.assertEqual(github_sync.sync_once(client, convert), "commit123")
+        pushed = client.puts[0][0]
+        self.assertNotIn("DOMAIN-SUFFIX,bing.com,DIRECT", pushed)
+        self.assertIn("DOMAIN-SUFFIX,bing.com,PROXY,force-remote-dns", block_of(pushed))
+        self.assertIn("DOMAIN-SUFFIX,chenxuning.cc,DIRECT", outside_of(pushed))
 
 
 class UnknownTagTests(unittest.TestCase):
@@ -396,7 +559,7 @@ class OutputSafetyTests(unittest.TestCase):
 
 class MarkerTests(unittest.TestCase):
     def test_insertion_before_trailing_geoip_and_outside_untouched(self):
-        text, _ = run_sync(HAND_KEPT)
+        text, _ = run_sync(HAND_KEPT, hand_rules_win=True)
         lines = text.splitlines()
         self.assertEqual(lines[0], HAND_KEPT.splitlines()[0])  # AI priority rules stay first
         self.assertEqual(lines[-1], "GEOIP,CN,DIRECT")
@@ -407,7 +570,7 @@ class MarkerTests(unittest.TestCase):
         seeded = sr.replace_router_sync_block(HAND_KEPT, ["DOMAIN-SUFFIX,old.example,DIRECT"])
         # hand edits placed after the block must survive too
         seeded = seeded.replace("GEOIP,CN,DIRECT", "DOMAIN-SUFFIX,added-later.example,DIRECT\nGEOIP,CN,DIRECT")
-        text, _ = run_sync(seeded)
+        text, _ = run_sync(seeded, hand_rules_win=True)
         self.assertEqual(outside_of(text), outside_of(seeded))
         self.assertNotIn("old.example", text)
         self.assertIn("added-later.example", text)
@@ -425,7 +588,7 @@ class MarkerTests(unittest.TestCase):
             sr.split_router_sync_block(f"{sr.ROUTER_SYNC_BEGIN}\nDOMAIN,a,DIRECT\n")
 
     def test_dedupe_against_hand_kept_lines(self):
-        text, report = run_sync(HAND_KEPT, include_rule_sets=True)
+        text, report = run_sync(HAND_KEPT, include_rule_sets=True, hand_rules_win=True)
         block = "\n".join(block_of(text))
         # openai.com / chatgpt.com / qq.com are hand-kept already
         self.assertNotIn(",openai.com,", block)
@@ -479,14 +642,14 @@ class DeletionGuardTests(unittest.TestCase):
         run_sync(self.seeded(40), route=self.route_keeping(1), allow_large_deletion=True)
 
     def test_small_previous_block_not_guarded(self):
-        text, _ = run_sync(self.seeded(19), route=self.route_keeping(1))
+        text, _ = run_sync(self.seeded(19), route=self.route_keeping(1), hand_rules_win=True)
         self.assertEqual(len(block_of(text)), 1)
 
     def test_moving_rules_to_hand_kept_is_not_deletion(self):
         seeded = self.seeded(40)
         hand = "\n".join(f"DOMAIN-SUFFIX,old{i}.example,DIRECT" for i in range(30, 40))
         seeded = seeded.replace("GEOIP,CN,DIRECT", hand + "\nGEOIP,CN,DIRECT")
-        text, _ = run_sync(seeded, route=self.route_keeping(40))
+        text, _ = run_sync(seeded, route=self.route_keeping(40), hand_rules_win=True)
         self.assertEqual(len(block_of(text)), 30)
 
     def test_cli_guard_exit_code_and_no_write(self):

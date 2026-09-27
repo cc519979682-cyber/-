@@ -3,7 +3,7 @@
 ## 这是做什么的
 
 家里路由器（ImmortalWrt + OpenBox / sing-box）里的分流规则会经常调整。
-这个小工具放在 NAS（绿联 DXP4800）上，**每小时自动**做一次：
+这个小工具放在 NAS（绿联 DXP4800）上，**每天晚上 21:00 自动**做一次：
 
 1. 通过 SSH **只读**登录路由器，只取出“分流规则”部分：
    - `route` 段（在路由器上提取；有 `jq` 就用 `jq`，没有就用系统自带的 `ucode`，**路由器上不需要安装任何软件**）
@@ -19,8 +19,11 @@
    // BEGIN router-sync (auto-generated, do not edit by hand)
    // END router-sync
    ```
-   这两行之外你手写的规则（Tailscale、家里 NAS 直连、泄漏测试、富途、广告、国内直连等）**一个字都不会动**，
-   而且手写规则优先（写在前面，重复的会自动去掉）。
+   **以路由器为准**：路由器里有的规则全部放进这两行之间，并采用路由器的策略；
+   如果标记块外面（“手写保留区”）有同一条规则（类型 + 域名/IP 相同，不区分大小写，不看策略），
+   就把它从保留区**移走**，不会两边重复。路由器里没有的规则（只存在于仓库里的，大约 90 条）
+   **原样留在原位、顺序不变**。注释、空行、两行标记、`GEOIP,CN,DIRECT` 永远不会被动。
+   想恢复旧做法（手写规则优先，重复的从路由器那边去掉），在 `sync.env` 里设 `HAND_RULES_WIN=1`。
 3. 只有内容真的变了，才通过 GitHub 网页接口更新文件，提交信息为 `Sync router rules (auto)`。
    GitHub Actions 随后会自动重新生成 Shadowrocket / v2rayN 配置。
 
@@ -42,8 +45,13 @@
   全部写出会多出约一万行（计数 `skipped_ip_direct_ruleset`）。直接写在路由规则里的直连 IP、以及走代理的 IP 段
   （例如 Telegram）照常保留。如确实需要，在 `sync.env` 里设置 `INCLUDE_RULESET_IP_DIRECT=1`。
 
-安全保护：如果这次生成的规则比上次**少了 10% 以上**（上次至少 20 条时），会**停止、不上传**，
-并在日志里说明原因（防止路由器临时出错把规则清空）。
+安全保护（任一条触发都会**停止、不上传**，在日志里写明原因，退出码非 0）：
+- 路由器这次一条可发布的规则都没有（例如读取失败）；
+- 这次的路由器规则数**不到上次标记块的一半**；
+- 标记块比上次**少了 10% 以上**（上次至少 20 条时）。
+
+这些都是为了防止路由器临时出错把规则清空。确认是你有意大幅删减后，可以用
+`ALLOW_LARGE_DELETION=1` 手动放行一次（“一条都没有”这一条不能放行）。
 
 NAS 上**不需要 git**（装了也不用），只用到自带的 `python3`、`curl`、`ssh`。
 
@@ -126,20 +134,32 @@ for p in jq ucode sha256sum; do if command -v "$p" >/dev/null 2>&1; then echo "$
 DRY_RUN=1 SYNC_LOG_STDOUT=1 sh ~/router-sync/sync_router_rules.sh
 ```
 
-会打印将要做的改动和统计（例如跳过了多少设备规则、有没有不认识的出站名），最后一行是 `result=dry-run`
+会打印将要做的改动和统计（例如跳过了多少设备规则、有没有不认识的出站名），其中：
+
+- `removed_from_hand_kept=N`：有 N 条保留区规则因为路由器也有，被移进了标记块；
+- `policy_changed=N`：其中策略被路由器改掉的条数，每条会单独列出一行
+  `POLICY CHANGED DOMAIN-SUFFIX,xxx: DIRECT -> PROXY (router wins)`；
+- `hand_kept_remaining=N`，以及 `hand_kept_DIRECT` / `hand_kept_PROXY` / `hand_kept_REJECT`：留在保留区的规则数，
+  后面 `HAND-KEPT rules remaining` 下面会逐条列出（就是“只在仓库里有”的那些）；
+- `block_rules=N`：标记块里的路由器规则数；
+- `shadowed_by_hand_kept=N`：保留区里有 N 条更宽的规则（写在标记块**上面**）会先匹配到某条路由器规则，
+  而且策略不同，每条列成 `SHADOWED ...`。例如保留区的 `DOMAIN-SUFFIX,youtube.com,PROXY` 会抢在路由器的
+  `DOMAIN-SUFFIX,ads.youtube.com,REJECT` 前面。看到这类提示，可以把那条保留区规则也加到路由器里，或者从仓库删掉。
+
+最后一行是 `result=dry-run`
 （没有变化时是 `result=unchanged`）。试跑只从公开地址读取 `personal/rules.conf`，**不需要 GitHub 令牌、也不会上传**；
 正式运行（去掉 `DRY_RUN=1`）才需要第 2 步的令牌。
 
-### 5. 设置每小时自动运行
+### 5. 设置每天自动运行
 
 ```sh
 crontab -e
 ```
 
-加一行（每小时第 17 分钟运行）：
+加一行（每天 21:00 运行一次）：
 
 ```
-17 * * * * /bin/sh $HOME/router-sync/sync_router_rules.sh
+0 21 * * * /bin/sh $HOME/router-sync/sync_router_rules.sh
 ```
 
 ## 日常查看
@@ -154,8 +174,9 @@ crontab -e
     在仓库的 `scripts/router_outbound_map.json` 里把它加到 `DIRECT` / `PROXY` / `REJECT` / `DROP` 之一；
     或者只在 NAS 上写一个同格式的 `outbound_map.local.json`，并在 `sync.env` 里设置 `OUTBOUND_MAP_OVERRIDE`。
     **真实节点名不要写进仓库。**
-  - `FAILED: deletion guard tripped`：规则一下子少了很多，已停止。确认是你有意删减后，
-    手动放行一次：`ALLOW_LARGE_DELETION=1 SYNC_LOG_STDOUT=1 sh ~/router-sync/sync_router_rules.sh`。
+  - `FAILED: safety guard tripped`：路由器没读到规则，或规则一下子少了很多，已停止、没有上传。
+    先检查路由器；确认是你有意删减后，手动放行一次：
+    `ALLOW_LARGE_DELETION=1 SYNC_LOG_STDOUT=1 sh ~/router-sync/sync_router_rules.sh`。
 - 暂停：`touch ~/router-sync/PAUSE`；恢复：`rm ~/router-sync/PAUSE`。
 - 彻底停用：`crontab -e` 删掉那一行。
 - 同一时间只会有一个在跑（`~/router-sync/run.lock`），上一次没跑完时这次会自动跳过。

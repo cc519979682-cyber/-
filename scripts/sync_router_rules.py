@@ -43,6 +43,11 @@ POLICIES = ("DIRECT", "PROXY", "REJECT", "DROP")
 DEFAULT_MAX_DELETE_RATIO = 0.10
 DEFAULT_GUARD_MIN_RULES = 20
 DEFAULT_MAX_LINES = 20000
+# Router-wins mode: refuse to write when the router yields fewer rules than this
+# share of the previous block (protects against a broken/partial router read).
+DEFAULT_MIN_KEEP_RATIO = 0.5
+# Rule types that are never moved out of the hand-kept section.
+NEVER_MOVED_TYPES = {"GEOIP", "FINAL", "MATCH", "RULE-SET"}
 
 # Fields that make a rule home-device specific: never published.
 DEVICE_SPECIFIC_FIELDS = {
@@ -201,6 +206,7 @@ class Report:
     unknown_tags: Counter = field(default_factory=Counter)
     missing_rulesets: set = field(default_factory=set)
     warnings: list = field(default_factory=list)
+    details: list = field(default_factory=list)
 
     def lines(self) -> list[str]:
         out = [f"{key}={self.counts[key]}" for key in sorted(self.counts)]
@@ -209,6 +215,7 @@ class Report:
         for tag in sorted(self.missing_rulesets):
             out.append(f"WARNING rule_set without decompiled JSON: {tag!r}")
         out.extend(f"WARNING {warning}" for warning in self.warnings)
+        out.extend(self.details)
         return out
 
 
@@ -663,6 +670,77 @@ def build_block(entries: list[tuple[str, str, str]], outside_lines: Iterable[str
     return lines
 
 
+def line_policy(line: str) -> str:
+    parts = [part.strip() for part in line.split(",")]
+    return sr.normalize_policy(parts[2]) or parts[2] if len(parts) >= 3 else ""
+
+
+def move_router_rules_out_of_hand_kept(
+    lines: list[str], router_policy: dict[tuple[str, str], str], report: Report
+) -> list[str]:
+    """Router-wins: drop hand-kept rule lines whose (type, value) the router also has.
+
+    Comments, blank lines, markers and GEOIP/FINAL lines are never touched; the
+    order of everything that stays is unchanged. Moved lines are recorded in the
+    report (with policy changes listed)."""
+
+    kept: list[str] = []
+    for line in lines:
+        key = line_key(line)
+        if key is None or key[0] in NEVER_MOVED_TYPES or key not in router_policy:
+            kept.append(line)
+            continue
+        report.counts["removed_from_hand_kept"] += 1
+        old_policy = line_policy(line)
+        new_policy = router_policy[key]
+        if old_policy != new_policy:
+            report.counts["policy_changed"] += 1
+            report.details.append(f"POLICY CHANGED {key[0]},{key[1]}: {old_policy} -> {new_policy} (router wins)")
+    return kept
+
+
+def _domain_shadowed_by(hand_type: str, hand_value: str, rule_type: str, rule_value: str) -> bool:
+    """Would hand rule (hand_type, hand_value) match every host of the router rule?"""
+
+    if rule_type == "DOMAIN-KEYWORD" or rule_type in {"IP-CIDR", "IP-CIDR6"}:
+        return False
+    if hand_type == "DOMAIN-KEYWORD":
+        return hand_value in rule_value
+    if hand_type == "DOMAIN-SUFFIX":
+        return rule_value == hand_value or rule_value.endswith("." + hand_value)
+    if hand_type == "DOMAIN":
+        return rule_type == "DOMAIN" and rule_value == hand_value
+    return False
+
+
+def report_shadowing(before: list[str], entries: list[tuple[str, str, str]], report: Report) -> None:
+    """Warn about hand-kept rules ABOVE the block that catch a router rule first with another policy."""
+
+    hand = []
+    for line in before:
+        key = line_key(line)
+        if key is not None and key[0] in {"DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD"}:
+            hand.append((key[0], key[1], line_policy(line), line))
+    for rule_type, value, policy in entries:
+        for hand_type, hand_value, hand_policy, line in hand:
+            if hand_policy != policy and _domain_shadowed_by(hand_type, hand_value, rule_type, value.lower()):
+                report.counts["shadowed_by_hand_kept"] += 1
+                report.details.append(
+                    f"SHADOWED router {rule_type},{value},{policy} is caught earlier by hand-kept {line.strip()}"
+                )
+                break
+
+
+def report_hand_kept(lines: list[str], report: Report) -> None:
+    rules = [line.strip() for line in lines if line_key(line) is not None]
+    report.counts["hand_kept_remaining"] = len(rules)
+    by_policy = Counter(line_policy(line) for line in rules)
+    for policy in sorted(by_policy):
+        report.counts[f"hand_kept_{policy}"] = by_policy[policy]
+    report.details.append(f"HAND-KEPT rules remaining ({len(rules)}), in file order:")
+    report.details.extend(f"  {line}" for line in rules)
+
+
 def check_deletion_guard(
     old_block: list[str] | None,
     new_block: list[str],
@@ -702,11 +780,18 @@ def sync_text(
     max_lines: int = DEFAULT_MAX_LINES,
     skip_ruleset_ip_direct: bool = True,
     include_rule_sets: bool = False,
+    hand_rules_win: bool = False,
+    min_keep_ratio: float = DEFAULT_MIN_KEEP_RATIO,
 ) -> str:
-    """Return the new rules.conf text (may equal the input). Raises SyncError."""
+    """Return the new rules.conf text (may equal the input). Raises SyncError.
+
+    Default (router wins): every publishable router rule goes into the block with
+    the router's policy, and hand-kept lines with the same (type, value) are
+    removed from outside the block. hand_rules_win=True restores the old mode in
+    which hand-kept lines stay and duplicates are left out of the block.
+    """
 
     before, old_block, after = sr.split_router_sync_block(rules_text)
-    outside = [*before, *after]
     entries = Converter(
         outbound_map,
         resolve_ruleset,
@@ -723,16 +808,42 @@ def sync_text(
         raise UnknownTagError(
             "Unknown outbound tags (--strict): " + ", ".join(sorted(mask_tag(tag) for tag in report.unknown_tags))
         )
+    if hand_rules_win:
+        outside = [*before, *after]
+    else:
+        if not entries:
+            raise GuardError(
+                "Router export produced 0 publishable rules; refusing to write (a broken router read "
+                "must not wipe rules). Nothing written."
+            )
+        old_count = sum(1 for line in (old_block or []) if line_key(line) is not None)
+        if old_count and len(entries) < min_keep_ratio * old_count and not allow_large_deletion:
+            raise GuardError(
+                f"Router export produced only {len(entries)} publishable rules, fewer than "
+                f"{min_keep_ratio:.0%} of the previous block ({old_count}). Nothing written."
+            )
+        router_policy = {rule_key(t, v): p for t, v, p in entries}
+        before = move_router_rules_out_of_hand_kept(before, router_policy, report)
+        after = move_router_rules_out_of_hand_kept(after, router_policy, report)
+        report.counts["removed_from_hand_kept"] += 0
+        report.counts["policy_changed"] += 0
+        report.counts["shadowed_by_hand_kept"] += 0
+        report_shadowing(before, entries, report)
+        outside = [*before, *after]
     block = build_block(entries, outside, report)
+    if not hand_rules_win:
+        report_hand_kept(outside, report)
     if len(block) > max_lines:
         report.warnings.append(
             f"router block has {len(block)} lines (> {max_lines}); the generated Shadowrocket config grows accordingly"
         )
     if not allow_large_deletion:
         check_deletion_guard(old_block, block, outside, max_delete_ratio, guard_min_rules)
-    if old_block is not None and old_block == block:
-        return rules_text
-    return sr.replace_router_sync_block(rules_text, block)
+    if old_block is None:
+        new_text = sr.replace_router_sync_block("\n".join(outside) + "\n", block)
+    else:
+        new_text = "\n".join([*before, sr.ROUTER_SYNC_BEGIN, *block, sr.ROUTER_SYNC_END, *after]) + "\n"
+    return rules_text if new_text == rules_text else new_text
 
 
 def unified_diff(old: str, new: str, path: str) -> str:
@@ -757,6 +868,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--guard-min-rules", type=int, default=DEFAULT_GUARD_MIN_RULES)
     parser.add_argument("--allow-large-deletion", action="store_true")
     parser.add_argument("--max-lines", type=int, default=DEFAULT_MAX_LINES)
+    parser.add_argument(
+        "--hand-rules-win",
+        action="store_true",
+        help="Old mode: hand-kept rules stay and win; router duplicates are left out of the block",
+    )
+    parser.add_argument("--min-keep-ratio", type=float, default=DEFAULT_MIN_KEEP_RATIO)
     parser.add_argument(
         "--include-rule-sets",
         action="store_true",
@@ -792,6 +909,8 @@ def main(argv: list[str] | None = None) -> int:
             max_lines=args.max_lines,
             skip_ruleset_ip_direct=not args.include_ruleset_ip_direct,
             include_rule_sets=args.include_rule_sets,
+            hand_rules_win=args.hand_rules_win,
+            min_keep_ratio=args.min_keep_ratio,
         )
     except GuardError as exc:
         print("\n".join(report.lines()), file=sys.stderr)

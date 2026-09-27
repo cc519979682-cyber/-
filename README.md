@@ -81,15 +81,16 @@ https://raw.githubusercontent.com/cc519979682-cyber/-/main/v2rayn_personal_routi
 
 ### 路由器规则自动同步
 
-家里 NAS 每小时会从路由器（OpenBox / sing-box）只读取出分流规则，转换成公开安全的规则，
+家里 NAS 每天 21:00 会从路由器（OpenBox / sing-box）只读取出分流规则，转换成公开安全的规则，
 写进 `personal/rules.conf` 里 `// BEGIN router-sync` 和 `// END router-sync` 两行之间，
 只有真的有变化才提交（`Sync router rules (auto)`），然后上面的流程自动重新生成配置。
 
-- 两行标记之外的手写规则不会被改动，并且优先于路由器同步的规则。
+- 以路由器为准：路由器里有的规则都放进标记块、用路由器的策略；标记块外面同样的规则会被移走（不重复）。
+  路由器里没有、只在仓库里的规则留在标记块外原位不动。可用 `HAND_RULES_WIN=1` 恢复“手写优先”的旧做法。
 - 节点、密码、UUID、订阅、按设备的规则、住宅出口规则、内网地址都不会被同步出来。
 - 默认只同步路由器里直接手写的规则；引用的第三方规则集（rule_set）默认不展开（可用 `INCLUDE_RULE_SETS=1` 打开）。
 - 单个主机 IP（IPv4 /29 及更小、IPv6 /120 及更小）不会被同步；展开规则集时，其中的直连 IP 段默认也不同步（已由 `GEOIP,CN,DIRECT` 覆盖）。
-- 一次少掉 10% 以上的规则会自动停止，避免路由器出错时把规则清空。
+- 路由器一条规则都没读到、规则数不到上次一半、或一次少掉 10% 以上时会自动停止，避免路由器出错时把规则清空。
 
 设置方法见 [`scripts/nas/README.md`](scripts/nas/README.md)。
 
