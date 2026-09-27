@@ -52,6 +52,11 @@ PROXY_POLICIES = {"AI", "YouTube", "TikTok", "Javday", "Proxy", "PROXY"}
 DIRECT_POLICIES = {"DIRECT", "Direct", "Domestic"}
 REJECT_POLICIES = {"REJECT", "Reject"}
 PUBLIC_PROXY_POLICY = "PROXY"
+CLAUDE_SUFFIXES = (
+    "claude.ai", "claude.com", "anthropic.com", "claudeusercontent.com",
+    "claude.app", "claudemcpcontent.com",
+)
+CLAUDE_COMMENT = "# Claude uses the selected proxy; residential routing is enforced on the configured VPS"
 TIKTOK_PROXY_DOMAINS = {
     ("DOMAIN-SUFFIX", "ibytedtos.com"),
     ("DOMAIN-SUFFIX", "isnssdk.com"),
@@ -571,6 +576,33 @@ def normalize_generated_rules(config: str) -> str:
     return "\n".join(result) + "\n"
 
 
+def enforce_claude_priority(config: str) -> str:
+    """Keep domain metadata and route Claude before broader DIRECT/IP rules.
+
+    This contains no nodes or credentials and does not provide an iOS VPN kill
+    switch. The selected proxy must be the VPS with residential enforcement.
+    """
+    result: list[str] = []
+    in_rule = False
+    for line in config.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_rule = stripped.lower() == "[rule]"
+            result.append(line)
+            if in_rule:
+                result.append(CLAUDE_COMMENT)
+                result.extend(f"DOMAIN-SUFFIX,{domain},PROXY,force-remote-dns" for domain in CLAUDE_SUFFIXES)
+            continue
+        if in_rule:
+            if stripped == CLAUDE_COMMENT:
+                continue
+            parts = [part.strip() for part in stripped.split(",")]
+            if len(parts) >= 3 and parts[0] == "DOMAIN-SUFFIX" and parts[1].lower() in CLAUDE_SUFFIXES:
+                continue
+        result.append(line)
+    return "\n".join(result) + "\n"
+
+
 def assert_public_safe(text: str) -> None:
     hits = []
     for pattern in SENSITIVE_PATTERNS:
@@ -672,6 +704,7 @@ def main() -> int:
         )
     )
     generated = generated.rstrip() + "\n"
+    generated = enforce_claude_priority(generated)
     validate_output(generated)
     write_text(Path(args.output), generated)
 
