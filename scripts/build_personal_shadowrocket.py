@@ -44,6 +44,9 @@ SAFE_GENERAL_KEYS = {
     for line in SAFE_GENERAL_LINES
 }
 HOME_ACCESS_DOMAINS = ("chenxuning.cc", "*.chenxuning.cc")
+TAILSCALE_CIDR = "100.64.0.0/10"
+TAILSCALE_DIRECT_RULE = f"IP-CIDR,{TAILSCALE_CIDR},DIRECT,no-resolve"
+TAILSCALE_COMMENT = "# Keep Tailscale peer traffic inside its tunnel, not the proxy"
 
 PROXY_POLICIES = {"AI", "YouTube", "TikTok", "Javday", "Proxy", "PROXY"}
 DIRECT_POLICIES = {"DIRECT", "Direct", "Domestic"}
@@ -398,6 +401,54 @@ def add_home_access_exceptions(config: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def keep_tailnet_in_tun(config: str) -> str:
+    """Keep tailnet addresses in the integrated Tailscale tunnel."""
+
+    result: list[str] = []
+    in_general = False
+    in_rule = False
+    found_skip_proxy = False
+    found_rule = False
+
+    for line in config.splitlines():
+        stripped = line.strip()
+        is_section = stripped.startswith("[") and stripped.endswith("]")
+        if is_section:
+            in_general = stripped.lower() == "[general]"
+            in_rule = stripped.lower() == "[rule]"
+            result.append(line)
+            if in_rule:
+                result.extend((TAILSCALE_COMMENT, TAILSCALE_DIRECT_RULE))
+                found_rule = True
+            continue
+
+        if in_general and "=" in stripped:
+            key, value = (part.strip() for part in stripped.split("=", 1))
+            normalized_key = key.lower()
+            if normalized_key in {"bypass-tun", "tun-excluded-routes"}:
+                values = [item.strip() for item in value.split(",") if item.strip()]
+                values = [item for item in values if item != TAILSCALE_CIDR]
+                if not values:
+                    continue
+                indent = line[: len(line) - len(line.lstrip())]
+                line = f"{indent}{key} = {','.join(values)}"
+            elif normalized_key == "skip-proxy":
+                found_skip_proxy = True
+                values = [item.strip() for item in value.split(",") if item.strip()]
+                if TAILSCALE_CIDR not in values:
+                    values.append(TAILSCALE_CIDR)
+                indent = line[: len(line) - len(line.lstrip())]
+                line = f"{indent}{key} = {', '.join(values)}"
+
+        if in_rule and stripped in {TAILSCALE_COMMENT, TAILSCALE_DIRECT_RULE}:
+            continue
+        result.append(line)
+
+    if not found_skip_proxy or not found_rule:
+        raise ValueError("Generated config needs skip-proxy and [Rule] for Tailscale routing")
+    return "\n".join(result) + "\n"
+
+
 def strip_unused_sections(config: str) -> str:
     """Remove upstream rewrite/MITM sections from the public outbound config."""
 
@@ -535,7 +586,9 @@ def main() -> int:
     upstream = fetch_upstream(args.upstream_url)
     generated = normalize_generated_rules(
         strip_unused_sections(
-            add_home_access_exceptions(force_safe_general_settings(insert_overlay(upstream, rules)))
+            keep_tailnet_in_tun(
+                add_home_access_exceptions(force_safe_general_settings(insert_overlay(upstream, rules)))
+            )
         )
     )
     generated = generated.rstrip() + "\n"
