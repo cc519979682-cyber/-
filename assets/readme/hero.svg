@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="400" viewBox="0 0 1200 400" role="img" aria-labelledby="title desc">
+  <title id="title">自用 Shadowrocket 与 v2rayN 分流规则</title>
+  <desc id="desc">公开规则经过直连、拦截和代理分流，生成 Shadowrocket 配置及 v2rayN 路由规则的示意图；不包含节点或凭据。</desc>
+  <rect width="1200" height="400" rx="26" fill="#13202b"/>
+  <rect x="1" y="1" width="1198" height="398" rx="25" fill="none" stroke="#354754" stroke-width="2"/>
+
+  <g id="identity" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif">
+    <text x="70" y="64" fill="#8baabb" font-size="20" font-weight="700" letter-spacing="2">PUBLIC RULES → CLIENT CONFIGS</text>
+    <text x="67" y="139" fill="#f5f8f9" font-size="66" font-weight="750">自用分流规则</text>
+    <text x="70" y="185" fill="#c0d0d8" font-size="29">Shadowrocket · v2rayN</text>
+    <text x="70" y="344" fill="#aebfc8" font-size="23">公开安全的个人规则 + 上游广告规则</text>
+  </g>
+
+  <g id="policies" font-family="ui-monospace,'SFMono-Regular',Menlo,monospace" font-size="21" font-weight="700">
+    <rect x="70" y="222" width="139" height="43" rx="8" fill="#213e3d"/>
+    <text x="139" y="250" fill="#8bdbb2" text-anchor="middle">DIRECT</text>
+    <rect x="220" y="222" width="139" height="43" rx="8" fill="#493336"/>
+    <text x="289" y="250" fill="#e9a4a0" text-anchor="middle">REJECT</text>
+    <rect x="370" y="222" width="139" height="43" rx="8" fill="#243d52"/>
+    <text x="439" y="250" fill="#9bcbeb" text-anchor="middle">PROXY</text>
+  </g>
+
+  <g id="outputs" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif">
+    <path d="M583 200h74m0-90v180m0-180h47m-47 180h47" fill="none" stroke="#668494" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="657" cy="200" r="8" fill="#9bcbeb"/>
+
+    <rect x="707" y="57" width="426" height="111" rx="15" fill="#1d303e" stroke="#567285" stroke-width="2"/>
+    <rect x="707" y="57" width="8" height="111" rx="4" fill="#7cc9df"/>
+    <text x="741" y="105" fill="#f5f8f9" font-size="32" font-weight="700">Shadowrocket</text>
+    <text x="742" y="140" fill="#9db5c3" font-size="22" font-family="ui-monospace,'SFMono-Regular',Menlo,monospace">.conf · 去广告与分流配置</text>
+
+    <rect x="707" y="233" width="426" height="111" rx="15" fill="#1d303e" stroke="#567285" stroke-width="2"/>
+    <rect x="707" y="233" width="8" height="111" rx="4" fill="#8bdbb2"/>
+    <text x="741" y="281" fill="#f5f8f9" font-size="32" font-weight="700">v2rayN</text>
+    <text x="742" y="316" fill="#9db5c3" font-size="22" font-family="ui-monospace,'SFMono-Regular',Menlo,monospace">.json · 路由规则</text>
+  </g>
+</svg>
