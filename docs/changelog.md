@@ -1,5 +1,10 @@
 # 变更记录
 
+## 2026-09-29
+
+- 针对 Shadowrocket 开启时 Apple Watch / watchOS 与 iPhone 软件更新极慢：在 `personal/rules.conf` 的 router-sync 标记外新增手写 DIRECT 规则，覆盖 Apple HT210060 软件更新目录与下载 CDN，以及上游白名单里被标成 PROXY、且无法被 `DOMAIN-SUFFIX,apple.com` 命中的 Akamai/EdgeSuite CNAME（如 `mesu-cdn.apple.com.akadns.net`）。
+- 不扩大到整个 `akadns.net`；不提交节点、凭据或私有 IP。合并后需在小火箭重新从配置 URL 拉取；手表更新仍建议充电并连 Wi‑Fi。
+
 ## 2026-09-27
 
 - 针对小火箭内置 Tailscale 访问家庭 HA 白屏：生成小火箭成品时从 TUN 旁路列表移除 `100.64.0.0/10`，把它加入 `skip-proxy`，并在 `[Rule]` 开头加入该网段 `DIRECT,no-resolve`。不公开 NAS 的具体 Tailscale IP。
