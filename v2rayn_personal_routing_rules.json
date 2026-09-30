@@ -22,10 +22,7 @@
       "domain:dnsleaktest.com",
       "domain:ipleak.net",
       "domain:whoer.net",
-      "keyword:browserleaks",
-      "keyword:dnsleak",
-      "keyword:ipleak",
-      "keyword:whoer"
+      "keyword:browserleaks"
     ]
   },
   {
