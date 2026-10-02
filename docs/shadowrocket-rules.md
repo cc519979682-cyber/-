@@ -30,6 +30,16 @@ GitHub 本身不会屏蔽广告，也不会帮你代理。真正执行规则的�
 
 ## 当前出门版 DNS 思路
 
+### Melco Club（新濠皇會）出门注意
+
+软路由侧对 Melco 使用 `dns-proxy`（`8.8.8.8` 经 Proxy）。出门版 Shadowrocket 对应做法是：
+
+- 手写区 `DOMAIN-SUFFIX` / `DOMAIN-KEYWORD,melco` → `PROXY,force-remote-dns`（须排在 `GEOIP,CN,DIRECT` 之前；构建脚本不会丢掉这些行）。
+- `[General] always-real-ip` 额外钉上 Melco 相关域名，避免 fake-IP 与透明网关行为不一致。
+
+若 Wi‑Fi 软路由正常、5G 规则模式仍提示网络限制：先更新订阅并重连；仍不行请抓 Shadowrocket「最近请求」里非 melco 主机名再补规则（不要无证据代理 ipify 一类）。
+
+
 出门时既要避免国外网站 DNS 泄露，也要保证国内网站能打开。
 
 所以当前策略是：
