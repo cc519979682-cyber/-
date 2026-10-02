@@ -112,7 +112,10 @@
       "domain:discordapp.com",
       "domain:discordapp.net",
       "domain:paypal.com",
-      "domain:paypalobjects.com"
+      "domain:paypalobjects.com",
+      "domain:melcoclub.com",
+      "domain:melcoclub.cn",
+      "domain:melco-dxmobprod.com"
     ]
   },
   {
