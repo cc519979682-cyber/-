@@ -10,6 +10,7 @@ from build_personal_shadowrocket import (
     TAILSCALE_CIDR,
     TAILSCALE_DIRECT_RULE,
     add_home_access_exceptions,
+    enforce_melco_priority,
     keep_tailnet_in_tun,
 )
 
@@ -69,3 +70,30 @@ class MelcoRealIpTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class MelcoPriorityTests(unittest.TestCase):
+    def test_melco_hoisted_before_cn_direct_and_apm_reject(self):
+        source = (
+            "[General]\n"
+            "dns-server = https://223.5.5.5/dns-query\n"
+            "[Rule]\n"
+            "DOMAIN-SUFFIX,example.com,PROXY,force-remote-dns\n"
+            "DOMAIN-SUFFIX,melcoclub.cn,PROXY,force-remote-dns\n"
+            "DOMAIN-SUFFIX,heapanalytics.com,REJECT\n"
+            "DOMAIN-SUFFIX,cn,DIRECT\n"
+            "FINAL,PROXY\n"
+        )
+        result = enforce_melco_priority(source)
+        rule = result.split("[Rule]\n", 1)[1]
+        melco_cn = "DOMAIN-SUFFIX,melcoclub.cn,PROXY,force-remote-dns"
+        mcp = "DOMAIN,mcp-blue.melcoclub.cn,PROXY,force-remote-dns"
+        heap = "DOMAIN-SUFFIX,heapanalytics.com,PROXY,force-remote-dns"
+        cn = "DOMAIN-SUFFIX,cn,DIRECT"
+        self.assertIn(mcp, rule)
+        self.assertIn(melco_cn, rule)
+        self.assertIn(heap, rule)
+        self.assertLess(rule.index(mcp), rule.index(cn))
+        self.assertLess(rule.index(melco_cn), rule.index(cn))
+        self.assertLess(rule.index(heap), rule.index(cn))
+        self.assertEqual(rule.count(melco_cn), 1)
+        self.assertNotIn("DOMAIN-SUFFIX,heapanalytics.com,REJECT", rule)

@@ -72,6 +72,33 @@ MELCO_REAL_IP_DOMAINS = (
     "altiramacau.com",
     "*.altiramacau.com",
 )
+# Hoisted to the top of [Rule] so they cannot lose to upstream DOMAIN-SUFFIX,cn,DIRECT
+# or adblock REJECT (soft-router has neither footgun for Melco).
+MELCO_COMMENT = (
+    "# Melco Club / 新濠皇會: PROXY before cn,DIRECT and adblock REJECT"
+)
+MELCO_EXACT_PROXY_DOMAINS = (
+    "mcp-blue.melcoclub.cn",
+)
+MELCO_PROXY_SUFFIXES = (
+    "melcoclub.com",
+    "melcoclub.cn",
+    "melco-dxmobprod.com",
+    "melco-club.com",
+    "cityclubmacau.com",
+    "melcoresorts.cn",
+    "melco-resorts.com",
+    "cityofdreamsmacau.com",
+    "cityofdreams.com",
+    "studiocity-macau.com",
+    "studiocitymacau.com",
+    "altiramacau.com",
+    "heapanalytics.com",
+    "newrelic.com",
+)
+MELCO_PROXY_KEYWORDS = (
+    "melco",
+)
 TAILSCALE_CIDR = "100.64.0.0/10"
 TAILSCALE_DIRECT_RULE = f"IP-CIDR,{TAILSCALE_CIDR},DIRECT,no-resolve"
 TAILSCALE_COMMENT = "# Keep Tailscale peer traffic inside its tunnel, not the proxy"
@@ -640,6 +667,58 @@ def enforce_claude_priority(config: str) -> str:
     return "\n".join(result) + "\n"
 
 
+def _melco_hoist_lines() -> list[str]:
+    lines = [MELCO_COMMENT]
+    lines.extend(
+        f"DOMAIN,{domain},PROXY,force-remote-dns" for domain in MELCO_EXACT_PROXY_DOMAINS
+    )
+    lines.extend(
+        f"DOMAIN-SUFFIX,{domain},PROXY,force-remote-dns" for domain in MELCO_PROXY_SUFFIXES
+    )
+    lines.extend(
+        f"DOMAIN-KEYWORD,{keyword},PROXY,force-remote-dns" for keyword in MELCO_PROXY_KEYWORDS
+    )
+    return lines
+
+
+def enforce_melco_priority(config: str) -> str:
+    """Pin Melco PROXY rules at the top of [Rule].
+
+    Outdoor logs showed mcp-blue.melcoclub.cn matching DOMAIN-SUFFIX,cn,DIRECT when
+    Melco hand rules were missing or ineffective on-device; hoisting makes the
+    published conf fail closed even if overlay order drifts. Also PROXY Melco APM
+    hosts that upstream adblock REJECT (soft-router does not).
+    """
+    hoist = _melco_hoist_lines()
+    exact = {d.lower() for d in MELCO_EXACT_PROXY_DOMAINS}
+    suffixes = {d.lower() for d in MELCO_PROXY_SUFFIXES}
+    keywords = {k.lower() for k in MELCO_PROXY_KEYWORDS}
+    result: list[str] = []
+    in_rule = False
+    for line in config.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_rule = stripped.lower() == "[rule]"
+            result.append(line)
+            if in_rule:
+                result.extend(hoist)
+            continue
+        if in_rule:
+            if stripped == MELCO_COMMENT:
+                continue
+            parts = [part.strip() for part in stripped.split(",")]
+            if len(parts) >= 3:
+                rtype, value = parts[0], parts[1].lower()
+                if rtype == "DOMAIN" and value in exact:
+                    continue
+                if rtype == "DOMAIN-SUFFIX" and value in suffixes:
+                    continue
+                if rtype == "DOMAIN-KEYWORD" and value in keywords:
+                    continue
+        result.append(line)
+    return "\n".join(result) + "\n"
+
+
 def assert_public_safe(text: str) -> None:
     hits = []
     for pattern in SENSITIVE_PATTERNS:
@@ -742,6 +821,7 @@ def main() -> int:
     )
     generated = generated.rstrip() + "\n"
     generated = enforce_claude_priority(generated)
+    generated = enforce_melco_priority(generated)
     validate_output(generated)
     write_text(Path(args.output), generated)
 
