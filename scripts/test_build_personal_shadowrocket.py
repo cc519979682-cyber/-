@@ -5,8 +5,11 @@ import ipaddress
 import unittest
 
 from build_personal_shadowrocket import (
+    HOME_ACCESS_DOMAINS,
+    MELCO_REAL_IP_DOMAINS,
     TAILSCALE_CIDR,
     TAILSCALE_DIRECT_RULE,
+    add_home_access_exceptions,
     keep_tailnet_in_tun,
 )
 
@@ -36,6 +39,33 @@ class TailnetRoutingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             keep_tailnet_in_tun("[General]\nbypass-tun = 100.64.0.0/10\n[Rule]\nFINAL,PROXY\n")
 
+
+
+class MelcoRealIpTests(unittest.TestCase):
+    def test_always_real_ip_includes_melco_without_skip_proxy(self):
+        source = (
+            "[General]\n"
+            "skip-proxy = localhost\n"
+            "always-real-ip = example.com\n"
+            "[Rule]\n"
+            "FINAL,PROXY\n"
+        )
+        result = add_home_access_exceptions(source)
+        general = result.split("[Rule]", 1)[0]
+        skip_line = next(
+            line for line in general.splitlines() if line.strip().lower().startswith("skip-proxy")
+        )
+        always_line = next(
+            line for line in general.splitlines() if line.strip().lower().startswith("always-real-ip")
+        )
+        for domain in HOME_ACCESS_DOMAINS:
+            self.assertIn(domain, skip_line)
+            self.assertIn(domain, always_line)
+        for domain in MELCO_REAL_IP_DOMAINS:
+            self.assertNotIn(domain, skip_line)
+            self.assertIn(domain, always_line)
+        self.assertIn("melco-dxmobprod.com", always_line)
+        self.assertIn("*.melcoclub.com", always_line)
 
 if __name__ == "__main__":
     unittest.main()

@@ -44,6 +44,34 @@ SAFE_GENERAL_KEYS = {
     for line in SAFE_GENERAL_LINES
 }
 HOME_ACCESS_DOMAINS = ("chenxuning.cc", "*.chenxuning.cc")
+# Melco Club outdoor parity with soft-router dns-proxy: keep real A/AAAA (no fake-IP)
+# while DOMAIN rules still force-remote-dns through proxy-dns-server.
+MELCO_REAL_IP_DOMAINS = (
+    "melcoclub.com",
+    "*.melcoclub.com",
+    "melcoclub.cn",
+    "*.melcoclub.cn",
+    "melco-club.com",
+    "*.melco-club.com",
+    "melco-dxmobprod.com",
+    "*.melco-dxmobprod.com",
+    "melcoresorts.cn",
+    "*.melcoresorts.cn",
+    "melco-resorts.com",
+    "*.melco-resorts.com",
+    "cityclubmacau.com",
+    "*.cityclubmacau.com",
+    "cityofdreamsmacau.com",
+    "*.cityofdreamsmacau.com",
+    "cityofdreams.com",
+    "*.cityofdreams.com",
+    "studiocity-macau.com",
+    "*.studiocity-macau.com",
+    "studiocitymacau.com",
+    "*.studiocitymacau.com",
+    "altiramacau.com",
+    "*.altiramacau.com",
+)
 TAILSCALE_CIDR = "100.64.0.0/10"
 TAILSCALE_DIRECT_RULE = f"IP-CIDR,{TAILSCALE_CIDR},DIRECT,no-resolve"
 TAILSCALE_COMMENT = "# Keep Tailscale peer traffic inside its tunnel, not the proxy"
@@ -409,17 +437,28 @@ def force_safe_general_settings(config: str) -> str:
 
 
 def add_home_access_exceptions(config: str) -> str:
-    """Keep the home DDNS domain out of Shadowrocket's proxy path.
+    """Keep home DDNS DIRECT-stable and Melco Club on real IPs outdoors.
 
-    The normal DIRECT rules remain the routing authority. These two general
-    settings additionally keep DNS and connection handling stable when the
-    same DDNS name is used both on the home Wi-Fi and from cellular networks.
+    - skip-proxy / always-real-ip always include HOME_ACCESS_DOMAINS so the
+      home DDNS name stays reachable on Wi-Fi and cellular.
+    - always-real-ip additionally includes MELCO_REAL_IP_DOMAINS so Melco Club
+      does not see Shadowrocket fake-IP answers (soft-router gateway never
+      fakes DNS). Routing still comes from DOMAIN PROXY + force-remote-dns.
     """
 
     lines = config.splitlines()
     in_general = False
     found_keys: set[str] = set()
     general_end_index: int | None = None
+
+    def merge_domains(existing: list[str], extra: tuple[str, ...]) -> list[str]:
+        values = list(existing)
+        seen = {item.lower() for item in values}
+        for domain in extra:
+            if domain.lower() not in seen:
+                values.append(domain)
+                seen.add(domain.lower())
+        return values
 
     for index, line in enumerate(lines):
         stripped = line.strip()
@@ -438,20 +477,21 @@ def add_home_access_exceptions(config: str) -> str:
             continue
 
         values = [item.strip() for item in value.split(",") if item.strip()]
-        seen = {item.lower() for item in values}
-        for domain in HOME_ACCESS_DOMAINS:
-            if domain.lower() not in seen:
-                values.append(domain)
-                seen.add(domain.lower())
+        values = merge_domains(values, HOME_ACCESS_DOMAINS)
+        if normalized_key == "always-real-ip":
+            values = merge_domains(values, MELCO_REAL_IP_DOMAINS)
         indent = line[: len(line) - len(line.lstrip())]
         lines[index] = f"{indent}{key} = {', '.join(values)}"
         found_keys.add(normalized_key)
 
     insert_at = general_end_index if general_end_index is not None else len(lines)
-    for key in ("skip-proxy", "always-real-ip"):
-        if key not in found_keys:
-            lines.insert(insert_at, f"{key} = {', '.join(HOME_ACCESS_DOMAINS)}")
-            insert_at += 1
+    if "skip-proxy" not in found_keys:
+        lines.insert(insert_at, f"skip-proxy = {', '.join(HOME_ACCESS_DOMAINS)}")
+        insert_at += 1
+    if "always-real-ip" not in found_keys:
+        always_values = merge_domains(list(HOME_ACCESS_DOMAINS), MELCO_REAL_IP_DOMAINS)
+        lines.insert(insert_at, f"always-real-ip = {', '.join(always_values)}")
+        insert_at += 1
 
     return "\n".join(lines) + "\n"
 
