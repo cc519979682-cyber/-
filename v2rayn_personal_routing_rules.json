@@ -308,7 +308,23 @@
     "outboundTag": "direct",
     "domain": [
       "domain:spdbccc.cn",
-      "domain:spdbccc.com.cn",
+      "domain:spdbccc.com.cn"
+    ]
+  },
+  {
+    "remarks": "国外服务代理域名",
+    "outboundTag": "proxy",
+    "domain": [
+      "full:sydney.bing.com",
+      "full:edgeservices.bing.com",
+      "domain:cartocdn.com",
+      "domain:openstreetmap.org"
+    ]
+  },
+  {
+    "remarks": "国内和生活服务直连域名",
+    "outboundTag": "direct",
+    "domain": [
       "domain:bing.com",
       "domain:ke.com",
       "domain:lianjia.com",
