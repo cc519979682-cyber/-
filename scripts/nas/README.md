@@ -55,6 +55,19 @@
 
 NAS 上**不需要 git**（装了也不用），只用到自带的 `python3`、`curl`、`ssh`。
 
+### 家庭广告关闭、手机仍保留：一次性兼容迁移
+
+若家庭现网已关闭广告，但手机仍需保留原公开的39条广告 `REJECT`，不要直接删除 auto 块里的规则或跳过删除保护。先在**本地仓库工作副本**运行：
+
+```sh
+python scripts/preserve_mobile_ad_rules.py --dry-run
+python scripts/preserve_mobile_ad_rules.py --write
+```
+
+该脚本只把原 auto 块已有、指纹固定的39条 `REJECT`复制到块前明确的 `mobile-ad-keep` 手写保留段，原 auto 块字节不变；随后仍用原转换器更新 auto 块。计数/标记/策略冲突会拒绝，转换前后重复运行均幂等。删除门禁本来就扣除手写段仍保留的规则，因此39条不会被算作删除；其他真实大删及最少保留条数仍会拦截。
+
+这是显式的一次性维护步骤，不会加入定时任务、恢复 `PAUSE`、启用 `INCLUDE_RULE_SETS`、使用 `ALLOW_LARGE_DELETION` 或执行 GitHub 上传。先完成两阶段本地检查，再走既有测试和PR合并流程。
+
 ## 第一次设置（只做一次）
 
 以下命令都在 NAS 上、用 `cc40045309` 这个用户执行。
