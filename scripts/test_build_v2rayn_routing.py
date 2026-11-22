@@ -70,7 +70,7 @@ class RoutingOrderTests(unittest.TestCase):
         for order in itertools.permutations(tags):
             with self.subTest(order=order):
                 rules = build_rules([f"DOMAIN,example.com,{policy}" for policy in order])
-                self.assertEqual([r["outboundTag"] for r in rules[:-1]], [tags[p] for p in order])
+                self.assertEqual([r["outboundTag"] for r in rules[1:-1]], [tags[p] for p in order])
                 self.assertEqual(first_outbound(rules, "example.com"), tags[order[0]])
 
     def test_same_outbound_domain_and_ip_remain_separate(self):
@@ -80,7 +80,7 @@ class RoutingOrderTests(unittest.TestCase):
             "IP-CIDR6,2001:db8::/32,DIRECT",
             "DOMAIN,last.example,DIRECT",
         ])
-        self.assertEqual(len(rules), 4)
+        self.assertEqual(len(rules), 5)
         self.assertTrue(all(not ("domain" in r and "ip" in r) for r in rules))
         self.assertEqual(first_outbound(rules, "first.example", "198.51.100.1"), "direct")
         self.assertEqual(first_outbound(rules, "other.example", "203.0.113.7"), "direct")
@@ -94,10 +94,10 @@ class RoutingOrderTests(unittest.TestCase):
             "DOMAIN,c.example,DIRECT",
             "DOMAIN,a.example,PROXY",
         ])
-        self.assertEqual(len(rules), 4)
-        self.assertEqual(rules[0]["domain"], ["full:a.example", "domain:b.example"])
-        self.assertEqual(rules[1]["domain"], ["full:c.example"])
-        self.assertEqual(rules[2]["domain"], ["full:a.example"])
+        self.assertEqual(len(rules), 5)
+        self.assertEqual(rules[1]["domain"], ["full:a.example", "domain:b.example"])
+        self.assertEqual(rules[2]["domain"], ["full:c.example"])
+        self.assertEqual(rules[3]["domain"], ["full:a.example"])
 
     def test_duplicate_keys_are_not_overwritten_or_globally_deduplicated(self):
         rules = build_rules([
@@ -106,8 +106,8 @@ class RoutingOrderTests(unittest.TestCase):
             "DOMAIN,duplicate.example,PROXY",
             "DOMAIN,duplicate.example,REJECT",
         ])
-        self.assertEqual(rules[0]["domain"], ["full:duplicate.example", "full:duplicate.example"])
-        self.assertEqual([r["outboundTag"] for r in rules[:-1]], ["direct", "proxy", "block"])
+        self.assertEqual(rules[1]["domain"], ["full:duplicate.example", "full:duplicate.example"])
+        self.assertEqual([r["outboundTag"] for r in rules[1:-1]], ["direct", "proxy", "block"])
         self.assertEqual(first_outbound(rules, "duplicate.example"), "direct")
 
     def test_geoip_keeps_its_source_position(self):
@@ -128,6 +128,19 @@ class RoutingOrderTests(unittest.TestCase):
                 })
                 self.assertEqual(sum("port" in r for r in rules), 1)
                 self.assertEqual(first_outbound(rules, "unmatched.test"), "proxy")
+
+    def test_local_and_tailnet_ips_precede_other_ip_rules(self):
+        rules = build_rules(["IP-CIDR,100.64.0.0/10,PROXY"])
+        for address in (
+            "10.10.1.2", "172.20.1.2", "192.168.1.2", "127.0.0.1",
+            "169.254.1.2", "100.64.0.7", "100.127.255.254",
+            "::1", "fd7a:115c:a1e0::123", "fe80::12",
+        ):
+            with self.subTest(address=address):
+                self.assertEqual(first_outbound(rules, address=address), "direct")
+        for outside in ("100.63.255.255", "100.128.0.1", "172.32.0.1", "2001:db8::1"):
+            with self.subTest(outside=outside):
+                self.assertEqual(first_outbound(rules, address=outside), "proxy")
 
 
 if __name__ == "__main__":

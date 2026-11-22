@@ -1,5 +1,27 @@
 [
   {
+    "remarks": "局域网和 Tailscale IP 直连",
+    "outboundTag": "direct",
+    "ip": [
+      "10.0.0.0/8",
+      "172.16.0.0/12",
+      "192.168.0.0/16",
+      "127.0.0.0/8",
+      "169.254.0.0/16",
+      "100.64.0.0/10",
+      "::1/128",
+      "fc00::/7",
+      "fe80::/10"
+    ]
+  },
+  {
+    "remarks": "国内和生活服务直连域名",
+    "outboundTag": "direct",
+    "domain": [
+      "domain:ug.link"
+    ]
+  },
+  {
     "remarks": "国外服务代理域名",
     "outboundTag": "proxy",
     "domain": [

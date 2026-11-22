@@ -16,6 +16,18 @@ POLICY_TO_OUTBOUND = {
     "REJECT": "block",
 }
 
+LOCAL_DIRECT_NETWORKS = (
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+    "100.64.0.0/10",  # Tailscale IPv4
+    "::1/128",
+    "fc00::/7",       # Includes the Tailscale IPv6 range
+    "fe80::/10",
+)
+
 SENSITIVE_PATTERNS = [
     re.compile(r"\b(ss|ssr|vmess|vless|trojan)://", re.I),
     re.compile(r"\b(uuid|password|passwd|api[_-]?key|token)\b", re.I),
@@ -53,7 +65,14 @@ def build_rules(lines: list[str]) -> list[dict[str, object]]:
         ("proxy", "domain"): "国外服务代理域名",
         ("proxy", "ip"): "国外服务代理 IP",
     }
-    result: list[dict[str, object]] = []
+    # Match IP access to local services before any personal rules or proxy fallback.
+    result: list[dict[str, object]] = [
+        {
+            "remarks": "局域网和 Tailscale IP 直连",
+            "outboundTag": "direct",
+            "ip": list(LOCAL_DIRECT_NETWORKS),
+        }
+    ]
 
     for line in lines:
         stripped = line.strip()
