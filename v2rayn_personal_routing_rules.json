@@ -15,13 +15,6 @@
     ]
   },
   {
-    "remarks": "国内和生活服务直连域名",
-    "outboundTag": "direct",
-    "domain": [
-      "domain:ug.link"
-    ]
-  },
-  {
     "remarks": "国外服务代理域名",
     "outboundTag": "proxy",
     "domain": [
@@ -32,6 +25,7 @@
     "remarks": "国内和生活服务直连域名",
     "outboundTag": "direct",
     "domain": [
+      "domain:ug.link",
       "full:chenxuning.cc",
       "keyword:chenxuning"
     ]
